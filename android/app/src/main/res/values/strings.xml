@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Chulco Scape</string>
+    <string name="title_activity_main">Chulco Scape</string>
+    <string name="package_name">com.tudominio.chulcoscape</string>
+    <string name="custom_url_scheme">com.tudominio.chulcoscape</string>
+</resources>
