@@ -1,186 +1,274 @@
 import Phaser from 'phaser';
-import { desbloquearPasePremium } from '../services/firebase.js';
+import { comprarRecompensaPase, desbloquearPasePremium, obtenerDatosJugador, obtenerNumeroSemana } from '../services/firebase.js';
 
 export default class SeasonPassScene extends Phaser.Scene {
-  constructor() {
-    super('SeasonPassScene');
-  }
-
-  create() {
-    // 1. CARGAR DATOS DE FIREBASE DESDE EL REGISTRO
-    this.playerData = this.registry.get('playerData');
-    
-    const width = this.cameras.main.width;
-    const height = this.cameras.main.height;
-
-    // Fondo azul noche elegante para el Pase de Temporada
-    this.cameras.main.setBackgroundColor('#0d1b2a');
-
-    // Título Principal
-    this.add.text(width / 2, 90, '🎟️ PASE DEL CHULLA', {
-      font: 'bold 64px Arial',
-      fill: '#ffffff'
-    }).setOrigin(0.5);
-
-    // Subtítulo de Temporada
-    this.add.text(width / 2, 160, 'Temporada 1: El Escape de la Bahía', {
-      font: '32px Arial',
-      fill: '#0095ff'
-    }).setOrigin(0.5);
-
-    // --- 2. INDICADORES DE PROGRESO DE NIVEL (XP) ---
-    const nivelActual = this.playerData.paseNivel || 1;
-    const xpActual = this.playerData.paseXP || 0;
-    const XP_REQUERIDA = 1000; // Umbral para subir de nivel definido en firebase.js
-
-    this.add.text(80, 240, `Tu Nivel Actual: ${nivelActual}`, {
-      font: 'bold 42px Arial',
-      fill: '#ffcc00'
-    });
-
-    this.add.text(width - 80, 240, `${xpActual} / ${XP_REQUERIDA} XP`, {
-      font: '36px Arial',
-      fill: '#aaaaaa'
-    }).setOrigin(1, 0);
-
-    // Barra de Progreso de Experiencia (Contenedor externo)
-    const contBarra = this.add.graphics();
-    contBarra.lineStyle(4, 0xffffff, 0.3);
-    contBarra.strokeRect(80, 300, width - 160, 40);
-
-    // Relleno dinámico proporcional a la XP actual del jugador
-    const rellenoBarra = this.add.graphics();
-    rellenoBarra.fillStyle(0x00ff66, 1);
-    const porcentajeXP = Math.min(1, xpActual / XP_REQUERIDA);
-    rellenoBarra.fillRect(84, 304, (width - 168) * porcentajeXP, 32);
-
-    // --- 3. VERIFICACIÓN Y COMPRA DEL PASO PREMIUM (MONETIZACIÓN) ---
-    const esPremium = this.playerData.pasePremium || false;
-
-    if (!esPremium) {
-      // Banner interactivo para comprar la versión de pago
-      const fondoPremium = this.add.rectangle(width / 2, 450, width - 100, 160, 0xff9900).setOrigin(0.5);
-      
-      this.add.text(100, 410, '🚀 ¡Pásate a PREMIUM por $2.99!', {
-        font: 'bold 36px Arial',
-        fill: '#1a1a1a'
-      });
-      this.add.text(100, 460, 'Desbloquea la Skin exclusiva del Diablo Huma', {
-        font: '28px Arial',
-        fill: '#333333'
-      });
-
-      // Botón de Pago Táctil
-      const btnComprarPase = this.add.text(width - 240, 450, 'COMPRAR', {
-        font: 'bold 34px Arial',
-        fill: '#ffffff',
-        backgroundColor: '#1a1a1a',
-        padding: { x: 30, y: 15 }
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-
-      btnComprarPase.on('pointerdown', () => {
-        this.procesarPagoPasePremium();
-      });
-    } else {
-      // Si ya es dueño del pase premium
-      this.add.rectangle(width / 2, 450, width - 100, 120, 0x00ff66, 0.2).setOrigin(0.5);
-      this.add.text(width / 2, 450, '⭐ ACTIVADO: Eres miembro del Pase Premium ⭐', {
-        font: 'bold 36px Arial',
-        fill: '#00ff66'
-      }).setOrigin(0.5);
+    constructor() {
+        super('SeasonPassScene');
     }
 
-    // --- 4. RECOMPENSAS SEGÚN EL NIVEL DEL JUGADOR ---
-    this.add.text(80, 570, '📋 Recompensas de tus Niveles:', {
-      font: 'bold 38px Arial',
-      fill: '#ffffff'
-    });
+    async create() {
+        this.cameras.main.setBackgroundColor('#0d1b2a');
+        const width = this.cameras.main.width;
+        const height = this.cameras.main.height;
 
-    // Renderizado de Niveles del pase (Ejemplo ilustrativo de los primeros niveles)
-    this.diseñarFilaPremio(height * 0.35, 1, '📦 Bono: +100 Monedas Base', '👑 Sombrero de Paja Base', true);
-    this.diseñarFilaPremio(height * 0.47, 2, '📦 Bono: +200 Monedas Extra', '👑 Skin: Diablo Huma (Premium)', esPremium);
-    this.diseñarFilaPremio(height * 0.59, 3, '📦 Bono: +300 Monedas Extra', '👑 Título Comercial Raro', esPremium);
+        const loadingText = this.add.text(width / 2, height / 2, "Cargando Pase...", { font: 'bold 24px Arial', fill: '#ffffff' }).setOrigin(0.5);
 
-    // --- 5. BOTÓN REGRESAR ---
-    const btnVolver = this.add.text(width / 2, height * 0.88, '↩️ VOLVER AL MENÚ', {
-      font: 'bold 46px Arial',
-      fill: '#ffffff',
-      backgroundColor: '#0095ff',
-      padding: { x: 60, y: 25 }
-    })
-    .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
+        try {
+            const datosNube = await obtenerDatosJugador();
+            if (datosNube) {
+                this.playerData = datosNube;
+                this.registry.set('playerData', this.playerData);
+            } else {
+                this.playerData = this.registry.get('playerData') || {};
+            }
+        } catch (error) {
+            console.error("Error al obtener datos:", error);
+            this.playerData = this.registry.get('playerData') || {};
+        }
 
-    btnVolver.on('pointerdown', () => {
-      this.scene.start('MenuScene');
-    });
+        loadingText.destroy();
 
-    this.cameras.main.fadeIn(300);
-  }
+        // Asegurar estructura
+        if (!this.playerData.recompensasPase) this.playerData.recompensasPase = [];
+        if (!this.playerData.dinero) this.playerData.dinero = 0;
+        if (!this.playerData.moneda) this.playerData.moneda = 0;
 
-  /**
-   * Helper gráfico para maquetar de forma ordenada los premios de cada hito
-   */
-  diseñarFilaPremio(y, nivelRequerido, premioGratis, premioPremium, premiumDesbloqueado) {
-    const width = this.cameras.main.width;
-    const nivelActual = this.playerData.paseNivel || 1;
-    const nivelAlcanzado = nivelActual >= nivelRequerido;
+        // UI Superior Estática (barra compacta de 120px)
+        const barHeight = 120;
+        const uiLayer = this.add.container(0, 0).setScrollFactor(0).setDepth(10);
+        uiLayer.add(this.add.rectangle(width / 2, barHeight / 2, width, barHeight, 0x1c2541));
+        uiLayer.add(this.add.text(width / 2, 28, 'PASE DEL CHULLA', { font: 'bold 40px Arial', fill: '#ffffff' }).setOrigin(0.5));
+        uiLayer.add(this.add.text(width / 2, 74, 'Temporada 1: El Escape de la Bahía', { font: '22px Arial', fill: '#0095ff' }).setOrigin(0.5));
 
-    // Caja base del hito
-    this.add.rectangle(width / 2, y + 30, width - 100, 170, 0x1c2541).setOrigin(0.5);
+        // Dinero (izquierda arriba) — texto + ícono alineados desde leftX
+        const leftX = 30;
+        const txtDinero = this.add.text(leftX, barHeight / 2 - 18, `${this.playerData.dinero}`, { font: 'bold 26px Arial', fill: '#00ff66' }).setOrigin(0, 0.5);
+        uiLayer.add(txtDinero);
+        const iconDinero = this.add.image(leftX + txtDinero.width + 8, barHeight / 2 - 18, 'dinero').setDisplaySize(28, 28).setOrigin(0, 0.5);
+        uiLayer.add(iconDinero);
 
-    // Número del nivel a la izquierda
-    this.add.text(90, y + 10, `NV.\n${nivelRequerido}`, {
-      font: 'bold 40px Arial',
-      fill: nivelAlcanzado ? '#00ff66' : '#666666',
-      align: 'center'
-    }).setOrigin(0, 0.5);
+        // Encebollados (izquierda, debajo del dinero) — alineados en el mismo leftX
+        const txtEnce = this.add.text(leftX, barHeight / 2 + 20, `${this.playerData.moneda}`, { font: 'bold 26px Arial', fill: '#ffcc00' }).setOrigin(0, 0.5);
+        uiLayer.add(txtEnce);
+        const iconEnce = this.add.image(leftX + txtEnce.width + 8, barHeight / 2 + 20, 'encebollado').setDisplaySize(28, 28).setOrigin(0, 0.5);
+        uiLayer.add(iconEnce);
 
-    // Textos de los premios
-    this.add.text(230, y - 10, `Gratis: ${premioGratis}`, {
-      font: '30px Arial',
-      fill: nivelAlcanzado ? '#ffffff' : '#777777'
-    });
+        // Scroll container
+        this.scrollContenedor = this.add.container(0, this.registry.get('paseScrollPos') || 0).setDepth(5);
 
-    const colorPremiumText = (nivelAlcanzado && premiumDesbloqueado) ? '#ff9900' : '#555555';
-    this.add.text(230, y + 35, `Premium: ${premioPremium}`, {
-      font: '30px Arial',
-      fill: colorPremiumText
-    });
+        // Banner Premium
+        this.crearBannerPremium();
 
-    // Indicador visual de estado
-    let sticker = '🔒';
-    if (nivelAlcanzado) {
-      sticker = premiumDesbloqueado ? '✅ Recogido' : '⚠️ Premium Bloqueado';
+        // Grilla de Semanas
+        this.renderizarSemanas();
+
+        // Scroll logic
+        this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
+            // Ajuste de límite de scroll para las 5 semanas (-2500 aprox)
+            this.scrollContenedor.y = Phaser.Math.Clamp(this.scrollContenedor.y - deltaY * 0.8, -2500, 0);
+            this.registry.set('paseScrollPos', this.scrollContenedor.y);
+        });
+
+        // Botón Volver
+        this.add.image(width / 15, height - 80, 'boton_volver')
+            .setDisplaySize(125, 125)
+            .setScrollFactor(0)
+            .setDepth(11)
+            .setInteractive({ useHandCursor: true })
+            .on('pointerdown', () => {
+                this.registry.set('paseScrollPos', 0);
+                this.scene.start('MenuScene');
+            });
     }
-    this.add.text(width - 80, y + 20, sticker, {
-      font: 'bold 28px Arial',
-      fill: nivelAlcanzado && premiumDesbloqueado ? '#00ff66' : '#ff3333'
-    }).setOrigin(1, 0.5);
-  }
 
-  /**
-   * Lógica asíncrona que simula la respuesta exitosa de la API de Stripe/PayPal 
-   * o el plugin Native IAP de Capacitor, y guarda la activación en Firebase.
-   */
-  async procesarPagoPasePremium() {
-    // Aquí es donde se conectará el plugin nativo del celular en producción.
-    // Simulamos la pasarela bancaria exitosa de inmediato:
-    try {
-      await desbloquearPasePremium();
-      
-      // Sincronizar el estado local en la RAM de Phaser
-      this.playerData.pasePremium = true;
-      this.registry.set('playerData', this.playerData);
+    crearBannerPremium() {
+        const width = this.cameras.main.width;
+        const esPremium = this.playerData.pasePremium;
+        const barHeight = 120;
 
-      this.sound.play('sonido_venta', { volume: 0.8 });
+        // Contenedor fijo en esquina superior derecha (dentro de la barra superior)
+        const uiBanner = this.add.container(0, 0).setScrollFactor(0).setDepth(10);
 
-      // Reiniciamos la escena para actualizar el banner y pintar las cerraduras en verde
-      this.scene.restart();
-    } catch (error) {
-      console.error("No se pudo procesar la compra del pase en chulco-scape-game:", error);
+        // Dimensiones y posición del contenedor UI
+        const contW = 280;
+        const contH = barHeight - 10; // casi toda la altura de la barra
+        const contX = width - contW / 2 - 12;
+        const contY = barHeight / 2; // centrado en la barra
+
+        const fondoContenedor = this.add.image(contX, contY, 'contenedor_ui').setDisplaySize(contW, contH);
+        uiBanner.add(fondoContenedor);
+
+        if (!esPremium) {
+            // Título "¡Pase Premium!"
+            const txtTitulo = this.add.text(contX, contY - 26, '¡Pase Premium!', {
+                font: 'bold 20px Arial', fill: '#ffcc00'
+            }).setOrigin(0.5);
+            uiBanner.add(txtTitulo);
+
+            // Botón boton_precio centrado en la mitad inferior del contenedor
+            const btnY = contY + 12;
+            const btnCompra = this.add.image(contX, btnY, 'boton_precio')
+                .setDisplaySize(120, 44)
+                .setInteractive({ useHandCursor: true });
+            uiBanner.add(btnCompra);
+
+            // "1000" + ícono encebollado centrados en el botón
+            const gap = 6;
+            const iconSize = 24;
+            const txtPrecio = this.add.text(contX - gap / 2, btnY, '1000', {
+                font: 'bold 20px Arial', fill: '#111111'
+            }).setOrigin(1, 0.5);
+            const iconEnceBtn = this.add.image(contX + gap / 2, btnY, 'encebollado')
+                .setDisplaySize(iconSize, iconSize).setOrigin(0, 0.5);
+            uiBanner.add([txtPrecio, iconEnceBtn]);
+
+            btnCompra.on('pointerdown', async () => {
+                if (this.playerData.moneda < 1000) {
+                    this.mostrarNotificacion('¡No tienes suficientes encebollados!', '#f00');
+                    return;
+                }
+                const exito = await desbloquearPasePremium();
+                if (exito) {
+                    if (this.sound.get('sonido_venta')) this.sound.play('sonido_venta', { volume: 0.8 });
+                    this.scene.restart();
+                }
+            });
+        } else {
+            // Pase activo — texto centrado en el contenedor
+            uiBanner.add(this.add.text(contX, contY, '⭐ Pase Premium Activo ⭐', {
+                font: 'bold 18px Arial', fill: '#00ff66'
+            }).setOrigin(0.5));
+        }
     }
-  }
+
+    renderizarSemanas() {
+        const width = this.cameras.main.width;
+        let startY = 280; // comienza justo debajo de la barra fija (120px) con margen
+
+        const recompensas = this.generarDatosRecompensas();
+        const semanaCalendario = obtenerNumeroSemana();
+        const semanaTemporada = (semanaCalendario % 5) === 0 ? 5 : (semanaCalendario % 5);
+
+        for (let w = 1; w <= 5; w++) {
+            const items = recompensas[w - 1];
+            const esSemanaActiva = w <= semanaTemporada;
+
+            // Título de la semana — elevado 20px extra para no quedar tapado por los contenedores
+            this.scrollContenedor.add(
+                this.add.text(width / 2, startY - 120, `SEMANA ${w}${!esSemanaActiva ? ' 🔒 (Próximamente)' : ''}`, {
+                    font: 'bold 34px Arial', fill: esSemanaActiva ? '#ffffff' : '#666666',
+                    stroke: '#000000', strokeThickness: 4
+                }).setOrigin(0.5)
+            );
+
+            startY += 50; // espacio compacto hasta la primera fila
+
+            // Dibujar Fila 1 (4 items)
+            this.dibujarFilaRecompensas(items.slice(0, 4), startY, width, esSemanaActiva);
+            startY += 270; // altura de caja + margen
+
+            // Dibujar Fila 2 (3 items)
+            this.dibujarFilaRecompensas(items.slice(4, 7), startY, width, esSemanaActiva);
+            startY += 300; // espacio extra entre semanas
+        }
+    }
+
+    dibujarFilaRecompensas(items, yPos, screenWidth, esSemanaActiva) {
+        const numItems = items.length;
+        const boxW = 200;   // ancho de la caja
+        const boxH = 240;   // alto de la caja (más cuadrado)
+        const spacing = 30;
+        const totalWidth = (numItems * boxW) + ((numItems - 1) * spacing);
+        let currentX = (screenWidth - totalWidth) / 2 + (boxW / 2);
+
+        items.forEach(item => {
+            const group = this.add.container(currentX, yPos);
+
+            const esPremiumItem = item.tipo === 'premium';
+            const estaComprado = (this.playerData.recompensasPase || []).includes(item.id);
+            const esBloqueadoPremium = esPremiumItem && !this.playerData.pasePremium;
+            const esBloqueadoSemana = !esSemanaActiva;
+
+            let boxColor = 0xffffff;
+            if (estaComprado) boxColor = 0x88ff88;
+            else if (esBloqueadoSemana || esBloqueadoPremium) boxColor = 0x888888;
+            else if (esPremiumItem) boxColor = 0xffdd88;
+
+            // Caja con imagen contenedor_skin más cuadrada
+            const caja = this.add.image(0, -10, 'contenedor_skin').setDisplaySize(boxW, boxH).setTint(boxColor);
+            group.add(caja);
+
+            // Etiqueta GRATIS / PREM en la parte superior de la caja
+            group.add(this.add.text(0, -boxH / 2 + 32, esPremiumItem ? '⭐ PREMIUM' : 'GRATIS', {
+                font: 'bold 18px Arial', fill: esPremiumItem ? '#ffcc00' : '#ffffff'
+            }).setOrigin(0.5));
+
+            // Nombre de la recompensa en el centro
+            group.add(this.add.text(0, -20, item.nombre, {
+                font: '20px Arial', fill: '#ffffff', align: 'center', wordWrap: { width: boxW - 20 }
+            }).setOrigin(0.5));
+
+            // Estado / Botón en la parte inferior
+            const btnY = boxH / 2 - 60; // justo dentro del borde inferior de la caja
+            if (estaComprado) {
+                group.add(this.add.text(0, btnY, 'ADQUIRIDO', { font: 'bold 18px Arial', fill: '#00aa00' }).setOrigin(0.5));
+            } else if (esBloqueadoSemana) {
+                group.add(this.add.text(0, btnY, '🔒', { font: 'bold 34px Arial', fill: '#666666' }).setOrigin(0.5));
+            } else if (esBloqueadoPremium) {
+                group.add(this.add.text(0, btnY, '🔒 PASE', { font: 'bold 20px Arial', fill: '#ff3333' }).setOrigin(0.5));
+            } else {
+                const btnCompra = this.add.image(0, btnY, 'boton_precio').setDisplaySize(boxW - 80, 44).setInteractive({ useHandCursor: true });
+                if (esPremiumItem) btnCompra.setTint(0xffcc00);
+
+                // Centrar texto + icono dinero en el botón
+                const txtCosto = this.add.text(4, btnY, `${item.costo}`, { font: 'bold 20px Arial', fill: '#111111' }).setOrigin(1, 0.5);
+                const iconDineroBtn = this.add.image(10, btnY, 'dinero').setDisplaySize(22, 22).setOrigin(0, 0.5);
+
+                btnCompra.on('pointerdown', async () => {
+                    if (this.playerData.dinero < item.costo) {
+                        this.mostrarNotificacion("¡No tienes suficiente dinero!", "#f00");
+                        return;
+                    }
+                    const exito = await comprarRecompensaPase(item.id, item.costo, esPremiumItem);
+                    if (exito) {
+                        this.playerData.dinero -= item.costo;
+                        if (!this.playerData.recompensasPase) this.playerData.recompensasPase = [];
+                        this.playerData.recompensasPase.push(item.id);
+                        this.registry.set('playerData', this.playerData);
+                        if (this.sound.get('sonido_venta')) this.sound.play('sonido_venta', { volume: 0.8 });
+                        this.scene.restart();
+                    }
+                });
+
+                group.add([btnCompra, txtCosto, iconDineroBtn]);
+            }
+
+            this.scrollContenedor.add(group);
+            currentX += boxW + spacing;
+        });
+    }
+
+    generarDatosRecompensas() {
+        const semanas = [];
+        for (let w = 1; w <= 5; w++) {
+            const items = [];
+            // Fila de 4
+            items.push({ id: `W${w}_I1`, tipo: 'free', costo: 200 * w, nombre: `Skin Base` });
+            items.push({ id: `W${w}_I2`, tipo: 'premium', costo: 300 * w, nombre: `Sombrero Exclusivo` });
+            items.push({ id: `W${w}_I3`, tipo: 'free', costo: 400 * w, nombre: `Lentes Oscuros` });
+            items.push({ id: `W${w}_I4`, tipo: 'premium', costo: 500 * w, nombre: `Zapatos Dorados` });
+
+            // Fila de 3
+            items.push({ id: `W${w}_I5`, tipo: 'free', costo: 600 * w, nombre: `Reloj Básico` });
+            items.push({ id: `W${w}_I6`, tipo: 'premium', costo: 800 * w, nombre: `Collar Diamante` });
+            items.push({ id: `W${w}_I7`, tipo: 'premium', costo: 1000 * w, nombre: `Skin Épica` });
+            semanas.push(items);
+        }
+        return semanas;
+    }
+
+    mostrarNotificacion(mensaje, colorFondo) {
+        const txt = this.add.text(this.cameras.main.width / 2, 200, mensaje, { font: 'bold 30px Arial', fill: '#fff', backgroundColor: colorFondo, padding: { x: 20, y: 10 }, align: 'center' }).setOrigin(0.5).setScrollFactor(0).setDepth(20);
+        this.time.delayedCall(2000, () => txt.destroy());
+    }
 }
