@@ -1,204 +1,187 @@
 import Phaser from 'phaser';
-import { comprarMejoraEnTienda, adquirirAccesorioEstetico } from '../services/firebase.js';
+import { comprarMejoraEnTienda, obtenerDatosJugador } from '../services/firebase.js';
+
+const TEXTOS = {
+  es: {
+    tienda: '🏪 TIENDA MEJORAS',
+    dinero: 'Dinero: $',
+    abonarDeuda: '💸 Abonar Deuda',
+    deudaActual: 'Deuda actual: $',
+    velocidad: '🏃 Velocidad (Nvl ',
+    descVelocidad: 'Camina más rápido',
+    danio: '🔥 Daño Bolón (Nvl ',
+    descDanio: 'Derriba motos',
+    irSkins: '🎭 TIENDA SKINS (PREMIUM)',
+    errorDinero: '¡No tienes dinero suficiente\nGil y Chiro!',
+    exitoMejora: '✅ Mejora adquirida',
+    exitoDeuda: '📉 Deuda reducida'
+  }
+};
 
 export default class ShopScene extends Phaser.Scene {
   constructor() {
     super('ShopScene');
+    this.lang = 'es';
   }
 
-  create() {
-    // 1. CARGAR DATOS ACTUALES DEL JUGADOR
-    this.playerData = this.registry.get('playerData');
-
+  // Convertimos a asíncrono para poder pedir datos a Firebase
+  async create() {
     const width = this.cameras.main.width;
     const height = this.cameras.main.height;
-
-    // Fondo gris oscuro texturizado para dar ambiente de oficina/tienda de empeño
     this.cameras.main.setBackgroundColor('#252525');
 
-    // Título Superior
-    this.add.text(width / 2, 100, '🏪 TIENDA Y NEGOCIACIÓN', {
-      font: 'bold 60px Arial',
-      fill: '#ffffff'
-    }).setOrigin(0.5);
-
-    // 2. MOSTRAR BILLETERA Y DEUDA EN TIEMPO REAL
-    this.textoMonedas = this.add.text(width / 2, 190, `Billetera: $${this.playerData.monedas}`, {
-      font: 'bold 44px Arial',
-      fill: '#ffcc00'
-    }).setOrigin(0.5);
-
-    this.textoDeuda = this.add.text(width / 2, 250, `Deuda con el Chulco: $${this.playerData.deudaActual}`, {
-      font: 'bold 44px Arial',
-      fill: '#ff3333'
-    }).setOrigin(0.5);
-
-    // --- 3. SECCIÓN DE COMPRAS E INTERFAZ MULTITOUCH ---
-
-    // ITEM 1: Abono a la Deuda
-    this.diseñarFilaTienda(height * 0.25, '💸 Abonar a la Deuda', 'Reduce -$100 de tu deuda', 150, () => {
-      this.procesarTransaccion('deuda', 150);
-    });
-
-    // ITEM 2: Mejora de Velocidad
-    const nivelVel = this.playerData.mejoras?.velocidad || 1;
-    const costoVel = nivelVel * 200;
-    this.diseñarFilaTienda(height * 0.40, `🏃 Mejorar Velocidad (Nivel ${nivelVel})`, 'Camina más rápido en la Bahía', costoVel, () => {
-      this.procesarTransaccion('velocidad', costoVel);
-    });
-
-    // ITEM 3: Mejora de Daño del Bolón
-    const nivelDmg = this.playerData.mejoras?.danioBolon || 1;
-    const costoDmg = nivelDmg * 250;
-    this.diseñarFilaTienda(height * 0.55, `🔥 Fuerza de Bolón (Nivel ${nivelDmg})`, 'Derriba motos con menos golpes', costoDmg, () => {
-      this.procesarTransaccion('danioBolon', costoDmg);
-    });
-
-    // ITEM 4: Skin Cosmética - Diablo Huma
-    const tieneDiablo = this.playerData.accesoriosComprados.includes('skin_diablo_huma');
-    const textoSkin = tieneDiablo ? '🎭 Equipar Diablo Huma' : '🎭 Skin: Diablo Huma';
-    const costoSkin = tieneDiablo ? 0 : 500;
-    this.diseñarFilaTienda(height * 0.70, textoSkin, tieneDiablo ? 'Ya adquirido' : 'Apariencia premium folclórica', costoSkin, () => {
-      if (tieneDiablo) {
-        this.equiparSkinLocal('skin_diablo_huma');
-      } else {
-        this.procesarSkin('skin_diablo_huma', 500);
-      }
-    });
-
-    // --- 4. BOTÓN DE SALIDA Y REGRESO AL MENÚ ---
-    const btnVolver = this.add.text(width / 2, height * 0.88, '↩️ VOLVER AL MENÚ', {
-      font: 'bold 46px Arial',
-      fill: '#ffffff',
-      backgroundColor: '#0095ff',
-      padding: { x: 60, y: 25 }
-    })
-    .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
-
-    btnVolver.on('pointerdown', () => {
-      this.scene.start('MenuScene');
-    });
-
-    this.cameras.main.fadeIn(300);
-  }
-
-  /**
-   * Helper modular para renderizar de manera limpia cada fila de producto en pantallas móviles.
-   */
-  diseñarFilaTienda(y, titulo, desc, costo, callbackCompra) {
-    const width = this.cameras.main.width;
-
-    // Caja de fondo para separar los productos
-    this.add.rectangle(width / 2, y + 20, width - 100, 150, 0x333333).setOrigin(0.5);
-
-    // Título y descripción del producto
-    this.add.text(80, y - 20, titulo, { font: 'bold 36px Arial', fill: '#ffffff' });
-    this.add.text(80, y + 25, desc, { font: '30px Arial', fill: '#aaaaaa' });
-
-    // Botón dinámico de precio o acción
-    const textoBoton = costo === 0 ? 'EQUIPAR' : `$${costo}`;
-    const btnComprar = this.add.text(width - 240, y + 20, textoBoton, {
-      font: 'bold 36px Arial',
-      fill: '#ffffff',
-      backgroundColor: costo === 0 ? '#00ff66' : '#ff9900',
-      padding: { x: 30, y: 15 },
-      align: 'center'
-    })
-    .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
-
-    btnComprar.on('pointerdown', callbackCompra);
-  }
-
-  /**
-   * Ejecuta la lógica asíncrona de compra de estadísticas y abonos comunicándose con Firebase.
-   */
-  async procesarTransaccion(tipo, costo) {
-    if (this.playerData.monedas < costo) {
-      this.mostrarNotificacion('¡No tienes suficiente dinero, chiro!');
-      return;
-    }
+    // Mostramos un texto temporal de carga mientras llega la información
+    const loadingText = this.add.text(width / 2, height / 2, "Cargando billetera...", { font: 'bold 24px Arial', fill: '#ffffff' }).setOrigin(0.5);
 
     try {
-      const exito = await comprarMejoraEnTienda(tipo, costo);
-      
-      if (exito) {
-        // Actualizar estados locales reflejados de inmediato en el registro de Phaser
-        this.playerData.monedas -= costo;
-        if (tipo === 'deuda') {
-          this.playerData.deudaActual = Math.max(0, this.playerData.deudaActual - 100);
-          
-          // Verificación de fin del juego (Campaña completada)
-          if (this.playerData.deudaActual <= 0) {
-            this.mostrarNotificacion('¡Felicidades! Pagaste toda tu deuda.');
-          }
+        // LECTURA EN TIEMPO REAL: Traemos los datos frescos de la base de datos
+        const datosNube = await obtenerDatosJugador();
+        if (datosNube) {
+            this.playerData = datosNube;
+            // Actualizamos la memoria global de Phaser con la data correcta
+            this.registry.set('playerData', this.playerData);
         } else {
-          if (!this.playerData.mejoras) this.playerData.mejoras = {};
-          this.playerData.mejoras[tipo] = (this.playerData.mejoras[tipo] || 1) + 1;
+            this.playerData = this.registry.get('playerData') || {};
         }
-
-        this.registry.set('playerData', this.playerData);
-        this.sound.play('sonido_venta', { volume: 0.5 });
-        
-        // Reiniciamos la escena para recalcular los nuevos costos y textos de nivel
-        this.scene.restart();
-      }
     } catch (error) {
-      console.error("Error al procesar la compra en Firestore:", error);
-    }
-  }
-
-  /**
-   * Lógica asíncrona para comprar una Skin Cosmética nueva
-   */
-  async procesarSkin(idSkin, costo) {
-    if (this.playerData.monedas < costo) {
-      this.mostrarNotificacion('Monedas insuficientes para este accesorio.');
-      return;
+        console.error("Error al obtener dinero de Firebase:", error);
+        this.playerData = this.registry.get('playerData') || {};
     }
 
-    try {
-      const exito = await adquirirAccesorioEstetico(idSkin, costo);
-      if (exito) {
-        this.playerData.monedas -= costo;
-        this.playerData.accesoriosComprados.push(idSkin);
-        this.playerData.accesorioEquipado = idSkin;
-        
-        this.registry.set('playerData', this.playerData);
-        this.scene.restart();
-      }
-    } catch (error) {
-      console.error("Error al comprar accesorio:", error);
-    }
-  }
+    // Destruimos el texto de carga para mostrar la tienda
+    loadingText.destroy();
 
-  /**
-   * Cambia el accesorio visual activo si la Skin ya fue comprada anteriormente
-   */
-  equiparSkinLocal(idSkin) {
-    this.playerData.accesorioEquipado = idSkin;
-    this.registry.set('playerData', this.playerData);
-    this.mostrarNotificacion('¡Accesorio equipado con éxito!');
-    this.scene.restart();
-  }
+    const T = TEXTOS[this.lang];
+    
+    // CORRECCIÓN: Usar 'dinero' en lugar de 'monedas'
+    if (this.playerData.dinero === undefined || this.playerData.dinero === null) this.playerData.dinero = 0;
+    
+    if (!this.playerData.mejoras) this.playerData.mejoras = {};
+    if (this.playerData.mejoras.velocidad === undefined) this.playerData.mejoras.velocidad = 1;
+    if (this.playerData.mejoras.danioBolon === undefined) this.playerData.mejoras.danioBolon = 1;
+    if (this.playerData.deudaActual === undefined) this.playerData.deudaActual = 400; 
 
-  /**
-   * Genera un banner temporal estético flotante para dar feedback al usuario móvil
-   */
-  mostrarNotificacion(mensaje) {
-    const width = this.cameras.main.width;
-    const txtNotif = this.add.text(width / 2, 330, mensaje, {
-      font: 'bold 32px Arial',
-      fill: '#ffffff',
-      backgroundColor: '#cc0000',
-      padding: { x: 30, y: 10 }
-    }).setOrigin(0.5);
+    // UI Superior Estática
+    const uiLayer = this.add.container(0, 0).setScrollFactor(0).setDepth(10);
+    uiLayer.add(this.add.rectangle(width / 2, 80, width, 160, 0x252525));
+    uiLayer.add(this.add.text(width / 2, 60, T.tienda, { font: 'bold 50px Arial', fill: '#ffffff' }).setOrigin(0.5));
+    
+    // CORRECCIÓN: Mostrar 'dinero' con el dato recién traído
+    uiLayer.add(this.add.text(50, 100, `${T.dinero}${this.playerData.dinero}`, { font: 'bold 36px Arial', fill: '#ffcc00' }));
 
-    // Desaparece automáticamente después de 2 segundos mediante un timer de Phaser
-    this.time.addEvent({
-      delay: 2000,
-      callback: () => { txtNotif.destroy(); }
+    // Contenedor con Scroll para las Mejoras
+    this.container = this.add.container(0, this.registry.get('scrollPos') || 0).setDepth(5);
+    let yPos = 250;
+
+    // Fila: Abonar Deuda
+    this.crearFila(yPos, T.abonarDeuda, `${T.deudaActual}${Math.max(0, this.playerData.deudaActual)}`, this.playerData.deudaActual > 0 ? 100 : 0, () => {
+      if (this.playerData.deudaActual <= 0) return;
+      this.procesarTransaccion('deuda', 100);
     });
+    yPos += 180;
+
+    // Fila: Velocidad
+    const nvVel = this.playerData.mejoras.velocidad;
+    this.crearFila(yPos, `${T.velocidad}${nvVel})`, T.descVelocidad, nvVel * 200, () => this.procesarTransaccion('velocidad', nvVel * 200));
+    yPos += 180;
+
+    // Fila: Daño Bolón
+    const nvDmg = this.playerData.mejoras.danioBolon;
+    this.crearFila(yPos, `${T.danio}${nvDmg})`, T.descDanio, nvDmg * 250, () => this.procesarTransaccion('danioBolon', nvDmg * 250));
+    yPos += 180;
+
+
+    // Sistema de Scroll mediante rueda del mouse
+    this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
+      this.container.y = Phaser.Math.Clamp(this.container.y - deltaY * 0.5, -400, 0);
+      this.registry.set('scrollPos', this.container.y);
+    });
+
+    // Botón Inferior para Volver al Menú Principal
+    this.add.image(width / 15, height - 80, 'boton_volver')
+      .setDisplaySize(125, 125)
+      .setScrollFactor(0)
+      .setDepth(11)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => {
+          this.registry.set('scrollPos', 0);
+          this.scene.start('MenuScene');
+      });
+  }
+
+  crearFila(y, titulo, desc, costo, callback) {
+    const group = this.add.container(0, 0);
+    const anchoDeseado = this.cameras.main.width - 100;
+    const altoDeseado = 150;
+
+    const fondoImg = this.add.image(this.cameras.main.width / 2, y, 'contenedor_ui');
+    fondoImg.setDisplaySize(anchoDeseado, altoDeseado);
+    group.add(fondoImg);
+
+    group.add(this.add.text(100, y - 40, titulo, { font: 'bold 32px Arial', fill: '#ffffff' }));
+    group.add(this.add.text(100, y + 10, desc, { font: '24px Arial', fill: '#aaa' }));
+
+    const btnImg = this.add.image(this.cameras.main.width - 200, y, 'boton_precio');
+    btnImg.setDisplaySize(220, 75);
+    btnImg.setTint(costo > 0 ? 0xffcc00 : 0x88ff88); 
+    btnImg.setInteractive({ useHandCursor: true });
+
+    const txtCosto = this.add.text(this.cameras.main.width - 200, y, costo > 0 ? `$${costo}` : 'MAX', { font: 'bold 26px Arial', fill: '#ffffff' }).setOrigin(0.5);
+
+    const btnBaseScaleX = btnImg.scaleX;
+    const btnBaseScaleY = btnImg.scaleY;
+
+    btnImg.on('pointerover', () => {
+        this.tweens.add({ targets: btnImg, scaleX: btnBaseScaleX * 1.05, scaleY: btnBaseScaleY * 1.05, duration: 100 });
+        this.tweens.add({ targets: txtCosto, scaleX: 1.05, scaleY: 1.05, duration: 100 });
+    });
+
+    btnImg.on('pointerout', () => {
+        this.tweens.add({ targets: btnImg, scaleX: btnBaseScaleX, scaleY: btnBaseScaleY, duration: 100 });
+        this.tweens.add({ targets: txtCosto, scaleX: 1, scaleY: 1, duration: 100 });
+    });
+
+    btnImg.on('pointerdown', () => {
+        if (costo === 0) return;
+        this.tweens.add({ targets: btnImg, scaleX: btnBaseScaleX * 0.9, scaleY: btnBaseScaleY * 0.9, duration: 60, yoyo: true });
+        this.tweens.add({ 
+            targets: txtCosto, 
+            scaleX: 0.9, 
+            scaleY: 0.9, 
+            duration: 60, 
+            yoyo: true, 
+            onComplete: callback 
+        });
+    });
+
+    group.add(btnImg);
+    group.add(txtCosto);
+    this.container.add(group);
+  }
+
+  async procesarTransaccion(tipo, costo) {
+    const T = TEXTOS[this.lang];
+    // CORRECCIÓN: Validar contra 'dinero'
+    if (this.playerData.dinero < costo) { this.mostrarNotificacion(T.errorDinero, '#f00'); return; }
+    
+    try {
+        const exito = await comprarMejoraEnTienda(tipo, costo);
+        if (exito) {
+            // CORRECCIÓN: Restar de 'dinero'
+            this.playerData.dinero -= costo;
+            
+            if (tipo === 'deuda') this.playerData.deudaActual = Math.max(0, (this.playerData.deudaActual || 0) - 100);
+            else this.playerData.mejoras[tipo] = (this.playerData.mejoras[tipo] || 1) + 1;
+            
+            this.registry.set('playerData', this.playerData);
+            this.mostrarNotificacion(tipo === 'deuda' ? T.exitoDeuda : T.exitoMejora, '#0f0');
+            this.time.delayedCall(1000, () => this.scene.restart());
+        }
+    } catch (e) { console.error(e); }
+  }
+
+  mostrarNotificacion(mensaje, colorFondo) {
+    const txt = this.add.text(this.cameras.main.width / 2, 200, mensaje, { font: 'bold 30px Arial', fill: '#fff', backgroundColor: colorFondo, padding: {x:20, y:10}, align: 'center' }).setOrigin(0.5).setScrollFactor(0).setDepth(20);
+    this.time.delayedCall(2000, () => txt.destroy());
   }
 }

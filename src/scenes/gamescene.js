@@ -1,296 +1,379 @@
 import Phaser from 'phaser';
-import { guardarResultadoRonda } from '../services/firebase.js';
+import { guardarResultadoRonda, actualizarDeuda, obtenerCatalogoSkins, obtenerDatosJugador } from '../services/firebase.js'; // Asegúrate de exportar obtenerDatosJugador
+import { CONFIG_NIVELES } from '../data/configniveles.js'; 
 import Jugador from '../components/jugador.js';
 import Chulquero from '../components/chulquero.js';
+import ControlesMobile from '../components/controlesmobile.js';
 
 export default class GameScene extends Phaser.Scene {
   constructor() {
     super('GameScene');
   }
 
-  init() {
-    // Recuperamos las mejoras del jugador guardadas en la memoria global por Firebase
-    const playerData = this.registry.get('playerData');
-    this.nivelVelocidad = playerData.mejoras?.velocidad || 1;
-    this.nivelDanio = playerData.mejoras?.danioBolon || 1;
-    this.skinEquipada = playerData.accesorioEquipado || 'sombrero_paja_toquilla_base';
+  init(data) {
+    const levelKey = data.levelKey || 'bahia';
+    this.datosNivelActual = CONFIG_NIVELES[levelKey];
 
-    // Variables de control de la partida actual
-    this.tiempoRestante = 180; // 3 minutos en segundos (180s)
+    if (!this.datosNivelActual) {
+      this.datosNivelActual = CONFIG_NIVELES['bahia'];
+    }
+    this.juegoCargado = false;
+    // Inicializamos con lo que haya en el registro (placeholder)
+    this.playerData = this.registry.get('playerData');
+    this.catalogoSkins = this.registry.get('catalogoSkins') || [];
+    
+    this.tiempoRestante = 180;
+    this.oleadaActual = 1;
+    this.cantidadSpawn = 1;
+    this.delayBaseChulqueros = 3500; 
+
     this.monedasGanadasRonda = 0;
     this.xpGanadaRonda = 0;
     this.juegoTerminado = false;
+    this.enPeriodoTradeo = false;
+
+    this.ultimoDisparo = 0;
+    this.cooldownDisparo = 250; 
   }
 
-  create() {
-    const width = this.cameras.main.width;
-    const height = this.cameras.main.height;
+  async create() {
+    // 1. Mostrar pantalla de carga
+    const vistaAncho = this.cameras.main.width;
+    const vistaAlto = this.cameras.main.height;
+    const loadingText = this.add.text(vistaAncho / 2, vistaAlto / 2, 'Cargando datos...', { 
+        font: 'bold 40px Arial', fill: '#ffffff' 
+    }).setOrigin(0.5).setDepth(1000);
 
-    // 1. FONDO DEL MAPA (LA BAHÍA)
-    this.add.image(width / 2, height / 2, 'fondo_bahia').setDisplaySize(width, height);
+    try {
+        // 2. Fetch de datos en tiempo real
+        this.playerData = await obtenerDatosJugador();
+        this.catalogoSkins = await obtenerCatalogoSkins();
+        
+        // Actualizamos el registro con los nuevos datos
+        this.registry.set('playerData', this.playerData);
+        this.registry.set('catalogoSkins', this.catalogoSkins);
+        
+        console.log("Datos actualizados de Firebase:", this.playerData);
+    } catch (error) {
+        console.error("Error al cargar datos:", error);
+    } finally {
+        loadingText.destroy();
+    }
 
-    // 2. CREACIÓN DEL JUGADOR (COMERCIANTE)
-    // Aplicamos la velocidad escalada según sus mejoras de la tienda
+    // --- CONTINUACIÓN NORMAL DEL JUEGO CON DATOS YA CARGADOS ---
+    this.nivelVelocidad = this.playerData?.mejoras?.velocidad || 1;
+    this.nivelDanio = this.playerData?.mejoras?.danioBolon || 1;
+    this.idSkinEquipada = this.playerData?.accesorioEquipado || 'skin_default';
+
+    this.mapaAncho = vistaAncho * this.datosNivelActual.mapaAnchoFactor;
+    this.mapaAlto = vistaAlto * this.datosNivelActual.mapaAltoFactor;
+
+    this.physics.world.setBounds(0, 0, this.mapaAncho, this.mapaAlto);
+
+    let fondo = this.add.image(0, 0, this.datosNivelActual.fondoKey).setOrigin(0, 0);
+    fondo.setDisplaySize(this.mapaAncho, this.mapaAlto);
+
+    this.edificios = this.physics.add.staticGroup();
+    if (this.datosNivelActual.edificios && Array.isArray(this.datosNivelActual.edificios)) {
+      this.datosNivelActual.edificios.forEach((conf) => {
+        let edificio = this.add.rectangle(conf.x, conf.y, conf.w, conf.h, 0xff0000, 0.6).setOrigin(0, 0);
+        this.physics.add.existing(edificio, true);
+        this.edificios.add(edificio);
+      });
+    }
+
     this.velocidadJugador = 300 + (this.nivelVelocidad * 30);
-    const playerData = this.registry.get('playerData');
-    this.jugador = new Jugador(this, width / 2, height * 0.7, playerData);
-    this.jugador.setCollideWorldBounds(true); // El comerciante no se sale de la pantalla del celular
+    
+    // --- CREACIÓN DEL JUGADOR ---
+    this.jugador = new Jugador(this, this.mapaAncho / 2, this.mapaAlto / 2, this.playerData);
+    
+    // --- LÓGICA DE APLICACIÓN DE SKIN (AHORA USANDO DATA FRESCA) ---
+    const skinData = this.catalogoSkins.find(s => s.id === this.playerData.accesorioEquipado);
+    const textureKey = skinData ? (skinData.imagen || skinData.id) : 'skin_default';
 
-    // Añadir visualmente el sombrero/skin equipado encima del jugador
-    this.skinVisual = this.add.image(this.jugador.x, this.jugador.y - 40, this.skinEquipada);
+    if (this.textures.exists(textureKey)) {
+        this.jugador.setTexture(textureKey);
+    } else {
+        this.jugador.setTexture('skin_default');
+    }
+    
+    this.jugador.setDisplaySize(95, 95);
 
-    // 3. GRUPOS FÍSICOS OPTIMIZADOS (Pool de Objetos)
+    this.cameras.main.setBounds(0, 0, this.mapaAncho, this.mapaAlto);
+    this.cameras.main.startFollow(this.jugador, true, 0.1, 0.1);
+
     this.chulqueros = this.physics.add.group();
     this.clientes = this.physics.add.group();
     this.proyectiles = this.physics.add.group();
 
-    // 4. INTERFAZ EN PANTALLA (HUD)
-    this.textoTiempo = this.add.text(50, 50, '⏱️ Tiempo: 03:00', { font: 'bold 40px Arial', fill: '#ffffff' });
-    this.textoGanancia = this.add.text(50, 110, '💰 Ventas: $0', { font: 'bold 40px Arial', fill: '#ffcc00' });
+    this.textoTiempo = this.add.text(30, 30, '⏱️ Oleada 1 - 03:00', { font: 'bold 36px Arial', fill: '#ffffff' }).setScrollFactor(0).setDepth(100);
+    this.textoGanancia = this.add.text(30, 85, '💰 Ventas: $0', { font: 'bold 36px Arial', fill: '#ffcc00' }).setScrollFactor(0).setDepth(100);
 
-    // 5. TEMPORIZADORES Y BUCLES AUTOMÁTICOS (Timers)
-    // Contador regresivo de cada segundo
-    this.timerReloj = this.time.addEvent({
-      delay: 1000,
-      callback: this.actualizarReloj,
-      callbackScope: this,
-      loop: true
+    this.timerReloj = this.time.addEvent({ delay: 1000, callback: this.actualizarReloj, callbackScope: this, loop: true });
+    this.timerChulqueros = this.time.addEvent({ delay: this.delayBaseChulqueros, callback: this.spawnChulquero, callbackScope: this, loop: true });
+    this.timerClientes = this.time.addEvent({ delay: 4500, callback: this.spawnCliente, callbackScope: this, loop: true });
+
+    this.esMovil = !this.sys.game.device.os.desktop;
+
+    this.teclasWASD = this.input.keyboard.addKeys({
+      up: Phaser.Input.Keyboard.KeyCodes.W, left: Phaser.Input.Keyboard.KeyCodes.A,
+      down: Phaser.Input.Keyboard.KeyCodes.S, right: Phaser.Input.Keyboard.KeyCodes.D
     });
+    this.teclasFlechas = this.input.keyboard.createCursorKeys();
 
-    // Spawn automático de cobradores en moto (Chulqueros) cada 4 segundos
-    this.timerChulqueros = this.time.addEvent({
-      delay: 4000,
-      callback: this.spawnChulquero,
-      callbackScope: this,
-      loop: true
-    });
+    if (this.esMovil) {
+      this.controlesMobileComp = new ControlesMobile(this);
+    }
 
-    // Spawn automático de clientes que quieren comprar cada 5 segundos
-    this.timerClientes = this.time.addEvent({
-      delay: 5000,
-      callback: this.spawnCliente,
-      callbackScope: this,
-      loop: true
-    });
-
-    // Ataque/Disparo automático de comida cada 1.5 segundos
-    this.timerDisparo = this.time.addEvent({
-      delay: 1500,
-      callback: this.dispararComidaAutomatica,
-      callbackScope: this,
-      loop: true
-    });
-
-    // 6. CONTROLES TÁCTILES MÓVILES (Pointer)
-    // Al arrastrar o tocar cualquier punto de la pantalla, el jugador se mueve hacia allá
-    this.input.on('pointermove', (pointer) => {
-      if (this.juegoTerminado) return;
-      this.jugador.moverHaciaPuntero(pointer);
-    });
-
-    this.input.on('pointerup', () => {
-      this.jugador.frenar();
-    });
-
-    // 7. CONFIGURACIÓN DE COLISIONES Y ARCADES
-    // Si un Chulquero atrapa al Jugador (Fin de la partida)
     this.physics.add.overlap(this.jugador, this.chulqueros, this.colisionJugadorChulquero, null, this);
-    
-    // Si la comida arrojada impacta a un Chulquero (Lo ahuyenta o frena)
     this.physics.add.overlap(this.proyectiles, this.chulqueros, this.colisionComidaChulquero, null, this);
-
-    // Si el jugador choca con un cliente (Le vende y gana dinero)
     this.physics.add.overlap(this.jugador, this.clientes, this.colisionJugadorCliente, null, this);
+    this.physics.add.overlap(this.proyectiles, this.clientes, this.colisionProyectilCliente, null, this);
 
-    // Efecto de entrada visual
+    this.physics.add.collider(this.jugador, this.edificios);
+    this.physics.add.collider(this.chulqueros, this.edificios);
+    this.physics.add.collider(this.proyectiles, this.edificios, this.colisionProyectilEdificio, null, this);
+
     this.cameras.main.fadeIn(400);
+
+    this.juegoCargado = true;
   }
 
-  update() {
-    // 1. CONTROL DE ESTADO: Si la ronda terminó (Game Over o Tiempo Agotado), congelamos el bucle por completo.
-    if (this.juegoTerminado) return;
+  dispararHacia(objetivoX, objetivoY) {
+    if (this.juegoTerminado || this.enPeriodoTradeo) return;
+    const tipoProyectil = Phaser.Math.Between(0, 1) === 0 ? 'proyectil_bolon' : 'proyectil_humita';
+    const proyectil = this.proyectiles.create(this.jugador.x, this.jugador.y, tipoProyectil).setDisplaySize(40, 40);
+    this.physics.moveTo(proyectil, objetivoX, objetivoY, 700);
+  }
 
-    // 2. ACTUALIZACIÓN DEL JUGADOR: 
-    // Invoca internamente la sincronización de coordenadas del comerciante y posiciona 
-    // automáticamente su accesorio estético (sombrero/máscara), además de aplicar el efecto espejo (FlipX).
+  dispararEnMovil() {
+    if (this.controlesMobileComp && this.controlesMobileComp.joystickActivo) {
+      const comp = this.controlesMobileComp;
+      const angulo = Phaser.Math.Angle.Between(comp.joystickX, comp.joystickY, comp.joystickPalanca.x, comp.joystickPalanca.y);
+      this.dispararHacia(this.jugador.x + Math.cos(angulo) * 300, this.jugador.y + Math.sin(angulo) * 300);
+    } else {
+      const masCercano = this.chulqueros.getLength() > 0 ? this.physics.closest(this.jugador, this.chulqueros.getChildren()) : null;
+      masCercano ? this.dispararHacia(masCercano.x, masCercano.y) : this.dispararHacia(this.jugador.x + 300, this.jugador.y);
+    }
+  }
+
+  update(time, delta) {
+    if (!this.juegoCargado || this.juegoTerminado || this.enPeriodoTradeo) return;
+
     this.jugador.update();
 
-    // 3. INTELIGENCIA ARTIFICIAL EN GRUPO (Motos de Cobradores):
-    // Recorremos de manera masiva cada instancia activa dentro de nuestro grupo físico de enemigos.
-    this.chulqueros.getChildren().forEach((chulquero) => {
-      
-      // Cada objeto ejecuta internamente su propio método de Inteligencia Artificial:
-      // - Calcula vectorialmente el ángulo exacto para perseguir al jugador con 'moveToObject'.
-      // - Evalúa su propia velocidad física en X para voltear su sprite (FlipX) a la izquierda o derecha.
-      chulquero.perseguirJugador(this.jugador);
-      
-    });
+    if (!this.esMovil && this.input.activePointer.isDown && time > this.ultimoDisparo) {
+      this.dispararHacia(this.input.activePointer.worldX, this.input.activePointer.worldY);
+      this.ultimoDisparo = time + this.cooldownDisparo;
+    }
+
+    if (!this.esMovil || (this.controlesMobileComp && !this.controlesMobileComp.joystickActivo)) {
+      let vX = 0, vY = 0;
+      if (this.teclasWASD.left.isDown || this.teclasFlechas.left.isDown) vX = -1;
+      else if (this.teclasWASD.right.isDown || this.teclasFlechas.right.isDown) vX = 1;
+
+      if (this.teclasWASD.up.isDown || this.teclasFlechas.up.isDown) vY = -1;
+      else if (this.teclasWASD.down.isDown || this.teclasFlechas.down.isDown) vY = 1;
+
+      if (vX !== 0 || vY !== 0) {
+        this.jugador.moverHaciaPuntero({ x: this.jugador.x + vX * 100, y: this.jugador.y + vY * 100, isDown: true });
+      } else {
+        this.jugador.frenar();
+      }
+    }
+
+    if (this.chulqueros) {
+        this.chulqueros.getChildren().forEach(chulquero => chulquero.perseguirJugador(this.jugador));
+    }  
   }
 
   actualizarReloj() {
-    if (this.juegoTerminado) return;
-
+    if (this.juegoTerminado || this.enPeriodoTradeo) return;
     this.tiempoRestante--;
     
-    // Formatear segundos matemáticos a formato legible MM:SS
     const minutos = Math.floor(this.tiempoRestante / 60).toString().padStart(2, '0');
     const segundos = (this.tiempoRestante % 60).toString().padStart(2, '0');
-    this.textoTiempo.setText(`⏱️ Tiempo: ${minutos}:${segundos}`);
+    this.textoTiempo.setText(`⏱️ Oleada ${this.oleadaActual} - ${minutos}:${segundos}`);
 
-    // DIFICULTAD ESCALABLE: Cada 30 segundos, los chulqueros aceleran de ritmo
-    if (this.tiempoRestante % 30 === 0) {
-      this.timerChulqueros.delay = Math.max(1500, this.timerChulqueros.delay - 500);
+    if (this.tiempoRestante % 30 === 0 && this.tiempoRestante > 0) {
+      this.timerChulqueros.delay = Math.max(1000, this.timerChulqueros.delay - 300);
     }
+    if (this.tiempoRestante <= 0) this.abrirEstadoDescanso();
+  }
 
-    // CONDICIÓN DE VICTORIA: Sobrevivió los 3 minutos
-    if (this.tiempoRestante <= 0) {
-      this.finalizarPartida(true, '¡LOGRASTE ESCAPAR!');
-    }
+  abrirEstadoDescanso() {
+    this.enPeriodoTradeo = true;
+    this.physics.world.pause(); 
+    if (this.timerReloj) this.timerReloj.paused = true;
+    if (this.timerChulqueros) this.timerChulqueros.paused = true;
+    if (this.timerClientes) this.timerClientes.paused = true;
+
+    this.jugador.frenar();
+    this.chulqueros.clear(true, true);
+    this.clientes.clear(true, true);
+
+    const vistaAncho = this.cameras.main.width;
+    const vistaAlto = this.cameras.main.height;
+
+    this.contenedorDescanso = this.add.container(0, 0).setScrollFactor(0).setDepth(300);
+    
+    let fondoNegro = this.add.rectangle(vistaAncho / 2, vistaAlto / 2, vistaAncho, vistaAlto, 0x000000, 0.75);
+    this.contenedorDescanso.add(fondoNegro);
+
+    this.imagenDescanso = this.add.image(vistaAncho / 2, vistaAlto / 2, 'juguito_mora').setOrigin(0.5).setScale(0.8);
+    this.contenedorDescanso.add(this.imagenDescanso);
+
+    this.tiempoDescansoRestante = 30;
+    
+    this.textoContadorDescanso = this.add.text(vistaAncho / 2, vistaAlto / 2, this.tiempoDescansoRestante.toString(), {
+      font: 'bold 120px Arial', fill: '#ffffff', stroke: '#000000', strokeThickness: 8
+    }).setOrigin(0.5);
+    this.contenedorDescanso.add(this.textoContadorDescanso);
+
+    this.timerVisualDescanso = this.time.addEvent({
+      delay: 1000,
+      callback: () => {
+        this.tiempoDescansoRestante--;
+        if (this.textoContadorDescanso && this.textoContadorDescanso.active) {
+          this.textoContadorDescanso.setText(this.tiempoDescansoRestante);
+          if (this.tiempoDescansoRestante <= 5) this.textoContadorDescanso.setFill('#ff3333');
+        }
+        if (this.tiempoDescansoRestante <= 0) {
+          this.timerVisualDescanso.destroy();
+          this.cerrarEstadoDescansoYContinuar();
+        }
+      },
+      callbackScope: this,
+      loop: true
+    });
+  }
+
+  cerrarEstadoDescansoYContinuar() {
+    if (this.contenedorDescanso) this.contenedorDescanso.destroy();
+    this.enPeriodoTradeo = false;
+    
+    this.physics.world.resume();
+    if (this.timerReloj) this.timerReloj.paused = false;
+    if (this.timerChulqueros) this.timerChulqueros.paused = false;
+    if (this.timerClientes) this.timerClientes.paused = false;
+    
+    this.textoGanancia.setText(`💰 Ventas: $${this.monedasGanadasRonda}`);
+    this.activarSiguienteOleada();
+  }
+
+  activarSiguienteOleada() {
+    this.oleadaActual++;
+    this.cantidadSpawn += 2;
+    this.tiempoRestante = 180;
+    this.delayBaseChulqueros = Math.max(800, this.delayBaseChulqueros - 500);
+    this.timerChulqueros.delay = this.delayBaseChulqueros;
+
+    let avisoOleada = this.add.text(this.cameras.main.width / 2, this.cameras.main.height / 3, `⚠️ NUEVA OLEADA ${this.oleadaActual} ⚠️\n¡Cuidado!`, {
+      font: 'bold 44px Arial', fill: '#ff3333', align: 'center', stroke: '#000000', strokeThickness: 6
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
+
+    this.tweens.add({
+      targets: avisoOleada, alpha: 0, duration: 500, yoyo: true, repeat: 3,
+      onComplete: () => avisoOleada.destroy()
+    });
   }
 
   spawnChulquero() {
-  if (this.juegoTerminado) return;
-
-  // Aparecen aleatoriamente en los bordes superiores o laterales fuera de la vista directa inmediata
-  const x = Phaser.Math.Between(0, 1) === 0 ? 0 : this.cameras.main.width;
-  const y = Phaser.Math.Between(150, this.cameras.main.height - 150);
-
-  // 1. MODIFICACIÓN: Instanciamos nuestra clase personalizada pasándole el tiempo restante.
-  // Toda la dificultad incremental de velocidad y vida ya se calcula automáticamente en su constructor.
-  const chulquero = new Chulquero(this, x, y, this.tiempoRestante);
-  
-  // 2. MODIFICACIÓN: Añadimos la instancia inteligente al grupo físico de la escena.
-  // Esto permite que el motor de Phaser siga gestionando las colisiones grupales de forma eficiente.
-  this.chulqueros.add(chulquero);
-
-  // Mantenemos tu feedback de audio original bajando ligeramente el volumen para no saturar al acumularse motos
-  this.sound.play('sonido_moto', { volume: 0.15 });
-}
+    if (this.juegoTerminado || this.enPeriodoTradeo) return;
+    for (let i = 0; i < this.cantidadSpawn; i++) {
+      let x = Phaser.Math.Between(0, 1) === 0 ? 0 : this.mapaAncho;
+      let y = Phaser.Math.Between(100, this.mapaAlto - 100);
+      const chulquero = new Chulquero(this, x, y, 180).setDisplaySize(95, 95);
+      this.chulqueros.add(chulquero);
+    }
+    this.sound.play('sonido_moto', { volume: 0.12 });
+  }
 
   spawnCliente() {
-    if (this.juegoTerminado) return;
-
-    // Los clientes aparecen en zonas comerciales fijas del mapa de forma estática
-    const x = Phaser.Math.Between(150, this.cameras.main.width - 150);
-    const y = Phaser.Math.Between(this.cameras.main.height * 0.4, this.cameras.main.height * 0.8);
-
-    const cliente = this.clientes.create(x, y, 'cliente_hambriento');
-    cliente.setImmovable(true);
+    if (this.juegoTerminado || this.enPeriodoTradeo) return;
+    let posX = Phaser.Math.Between(100, this.mapaAncho - 100);
+    let posY = Phaser.Math.Between(100, this.mapaAlto - 100);
+    this.clientes.create(posX, posY, 'cliente_hambriento').setImmovable(true).setDisplaySize(85, 85);
   }
 
-  dispararComidaAutomatica() {
-    if (this.juegoTerminado || this.chulqueros.getLength() === 0) return;
-
-    // Mecánica Auto-shooter: Busca automáticamente al chulquero más cercano
-    const masCercano = this.physics.closest(this.jugador, this.chulqueros.getChildren());
-    
-    if (masCercano) {
-      // El tipo de proyectil (bolón o humita) alterna visualmente de forma aleatoria
-      const tipoProyectil = Phaser.Math.Between(0, 1) === 0 ? 'proyectil_bolon' : 'proyectil_humita';
-      const proyectil = this.proyectiles.create(this.jugador.x, this.jugador.y, tipoProyectil);
-      
-      // Dispara el bolón directo a la velocidad del chulquero detectado
-      this.physics.moveToObject(proyectil, masCercano, 650);
-    }
-  }
-
-  /**
-   * MANEJO DE COLISIÓN: Se ejecuta cuando un proyectil (bolón/humita) impacta a una moto.
-   * @param {Phaser.GameObjects.Sprite} proyectil - El objeto volador arrojado
-   * @param {Chulquero} chulquero - Instancia del enemigo impactado
-   */
   colisionComidaChulquero(proyectil, chulquero) {
-    // 1. Destruimos el bolón de inmediato tras el impacto para que no siga de largo traspasando enemigos
     proyectil.destroy(); 
+    if (chulquero.recibirDanio(this.nivelDanio)) this.xpGanadaRonda += 25; 
+  }
 
-    // 2. MODIFICACIÓN: Delegamos el procesamiento del golpe al propio Chulquero.
-    // Le pasamos el nivel de daño actual del jugador comprado en la tienda.
-    // 'recibirDanio' internamente resta la vida, genera el flash rojo y aplica el knockback.
-    // Además, nos devuelve 'true' si el chulquero murió o 'false' si sobrevivió.
-    const enemigoMuerto = chulquero.recibirDanio(this.nivelDanio);
+  colisionProyectilEdificio(proyectil, edificio) { proyectil.destroy(); }
 
-    // 3. Si el enemigo se quedó sin puntos de vida debido al impacto:
-    if (enemigoMuerto) {
-      // Cada cobrador tumbado le otorga de inmediato 25 puntos de XP para el Pase del Chulla
-      this.xpGanadaRonda += 25; 
-      
-      // (Opcional) Puedes añadir aquí un sonido de explosión o caída si lo deseas:
-      // this.sound.play('sonido_caida', { volume: 0.3 });
+  colisionProyectilCliente(proyectil, cliente) {
+    proyectil.destroy();
+    cliente.destroy();
+    this.monedasGanadasRonda += 1;
+    
+    if (this.playerData) {
+      this.playerData.monedas += 1;
+      this.registry.set('playerData', this.playerData);
     }
+    this.textoGanancia.setText(`💰 Ventas: $${this.monedasGanadasRonda}`);
+    this.sound.play('sonido_venta', { volume: 0.6 });
   }
 
   colisionJugadorCliente(jugador, cliente) {
-    cliente.destroy(); // El cliente ya compró y se retira feliz
-    
-    // Incremento financiero inmediato de la ronda
+    cliente.destroy(); 
     this.monedasGanadasRonda += 50;
     this.xpGanadaRonda += 10;
-    this.textoGanancia.setText(`Ventas: $${this.monedasGanadasRonda}`);
-
+    
+    if (this.playerData) {
+      this.playerData.monedas += 50; 
+      this.registry.set('playerData', this.playerData);
+    }
+    
+    this.textoGanancia.setText(`💰 Ventas: $${this.monedasGanadasRonda}`);
     this.sound.play('sonido_venta', { volume: 0.6 });
   }
 
   colisionJugadorChulquero(jugador, chulquero) {
-    // CONDICIÓN DE DERROTA: El cobrador te alcanzó en la moto
-    this.finalizarPartida(false, '¡EL CHULQUERO TE ATRAPÓ!');
+    if (!this.enPeriodoTradeo) this.finalizarPartida(false, '¡EL CHULQUERO TE ATRAPÓ!');
   }
 
   async finalizarPartida(victoria, mensaje) {
     if (this.juegoTerminado) return;
     this.juegoTerminado = true;
 
-    // Frenar todas las físicas del juego de inmediato
     this.physics.pause();
-
-    // Detener relojes y spawner
     this.timerReloj.destroy();
     this.timerChulqueros.destroy();
     this.timerClientes.destroy();
-    this.timerDisparo.destroy();
+    if (this.controlesMobileComp) this.controlesMobileComp.destroy(); 
 
-    // Cartel visual de Fin de Partida
+    if (!victoria) {
+        const penalizacion = 250; 
+        await actualizarDeuda(penalizacion);
+        if (this.playerData) {
+            this.playerData.deudaActual = (this.playerData.deudaActual || 0) + penalizacion;
+            this.registry.set('playerData', this.playerData);
+        }
+    }
+
     const width = this.cameras.main.width;
     const height = this.cameras.main.height;
 
-    this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.7);
+    this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.75).setScrollFactor(0).setDepth(200);
+    this.add.text(width / 2, height * 0.38, mensaje, { font: 'bold 60px Arial', fill: victoria ? '#00ff66' : '#ff3333' }).setOrigin(0.5).setScrollFactor(0).setDepth(201);
 
-    this.add.text(width / 2, height * 0.4, mensaje, {
-      font: 'bold 64px Arial',
-      fill: victoria ? '#00ff66' : '#ff3333'
-    }).setOrigin(0.5);
-
-    this.add.text(width / 2, height * 0.5, `Recaudado: +$${this.monedasGanadasRonda}\nXP Ganada: +${this.xpGanadaRonda}`, {
-      font: '40px Arial',
-      fill: '#ffffff',
-      align: 'center'
-    }).setOrigin(0.5);
-
-    // GUARDAR EN FIREBASE: Registramos las ganancias de manera persistente en la nube de Google
     try {
       await guardarResultadoRonda(this.monedasGanadasRonda, this.xpGanadaRonda);
       
-      // Actualizamos también los datos locales en el registro de Phaser para las siguientes escenas
-      const datosLocales = this.registry.get('playerData');
-      datosLocales.monedas += this.monedasGanadasRonda;
-      datosLocales.paseXP += this.xpGanadaRonda;
-      this.registry.set('playerData', datosLocales);
-    } catch (error) {
-      console.error("No se pudo sincronizar la ronda en chulco-scape-game:", error);
+      if (this.playerData) {
+        this.playerData.paseXP = (this.playerData.paseXP || 0) + this.xpGanadaRonda;
+        this.registry.set('playerData', this.playerData);
+      }
+    } catch (e) { 
+      console.error("Error guardando datos en Firebase: ", e); 
     }
 
-    // Botón para salir y volver a negociar o cobrar recompensas
-    const btnSalir = this.add.text(width / 2, height * 0.65, 'CONTINUAR', {
-      font: 'bold 46px Arial',
-      fill: '#ffffff',
-      backgroundColor: '#0095ff',
-      padding: { x: 50, y: 20 }
-    })
-    .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
+    const btnSalir = this.add.text(width / 2, height * 0.68, 'CONTINUAR', {
+      font: 'bold 44px Arial', fill: '#ffffff', backgroundColor: '#0095ff', padding: { x: 45, y: 18 }
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setScrollFactor(0).setDepth(201);
 
-    btnSalir.on('pointerdown', () => {
-      // Nos vamos directo a la ShopScene (Fase 2: La Negociación)
-      this.scene.start('ShopScene');
-    });
+    btnSalir.on('pointerdown', () => this.scene.start('ShopScene'));
   }
 }
