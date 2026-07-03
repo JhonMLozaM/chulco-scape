@@ -4,7 +4,12 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import { 
   getAuth, 
-  signInAnonymously 
+  signInAnonymously,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  FacebookAuthProvider
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 import { 
   getFirestore, 
@@ -15,7 +20,9 @@ import {
   increment,
   arrayUnion,
   collection, 
-  getDocs 
+  getDocs,
+  query,
+  where
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 // =====================================================================================
@@ -156,12 +163,38 @@ export const obtenerCatalogoSkins = async () => {
   }
 };
 
-// --- GESTIÓN DE SKINS DEL JUGADOR ---
-export const equiparSkinEnFirebase = async (skinId) => {
+export const equiparSkinEnFirebase = async (skinId, tipo = 'apariencias') => {
   const user = auth.currentUser;
   if (!user) return;
   const jugadorDocRef = doc(db, "jugadores", user.uid);
-  await updateDoc(jugadorDocRef, { accesorioEquipado: skinId });
+  
+  const updates = {};
+  if (tipo === 'apariencias') updates.accesorioEquipado = skinId;
+  else if (tipo === 'pantallas_carga') updates.pantallaCargaEquipada = skinId;
+  else if (tipo === 'musica') updates.musicaEquipada = skinId;
+  else if (tipo === 'disparos') updates.disparoEquipado = skinId;
+
+  await updateDoc(jugadorDocRef, updates);
+};
+
+/**
+ * Actualiza los campos básicos del perfil del jugador en Firestore.
+ * Solo actualiza los campos que se proporcionen (no nulos).
+ */
+export const actualizarPerfil = async (camposActualizados) => {
+  const user = auth.currentUser;
+  if (!user) return false;
+  const jugadorDocRef = doc(db, "jugadores", user.uid);
+  const datosLimpios = {};
+  const camposPermitidos = ['nick', 'nombre', 'correo', 'telefono', 'fechaNacimiento', 'avatarUrl'];
+  for (const campo of camposPermitidos) {
+    if (camposActualizados[campo] !== undefined && camposActualizados[campo] !== null) {
+      datosLimpios[campo] = camposActualizados[campo];
+    }
+  }
+  if (Object.keys(datosLimpios).length === 0) return false;
+  await updateDoc(jugadorDocRef, datosLimpios);
+  return true;
 };
 
 export const adquirirAccesorioEstetico = async (idAccesorio, costo) => {
@@ -177,11 +210,18 @@ export const adquirirAccesorioEstetico = async (idAccesorio, costo) => {
     return false; 
   }
 
-  await updateDoc(jugadorDocRef, {
+  const updates = {
     moneda: increment(-costo), // Resta los encebollados
     skinsDesbloqueadas: arrayUnion(idAccesorio),
     accesorioEquipado: idAccesorio 
-  });
+  };
+
+  // VINCULACIÓN: Si es la pantalla de carga, marcar también la recompensa en el pase de batalla
+  if (idAccesorio === 'pantalla_carga') {
+    updates.recompensasPase = arrayUnion('W1_I4');
+  }
+
+  await updateDoc(jugadorDocRef, updates);
   return true;
 };
 
@@ -235,12 +275,21 @@ const verificarSubidaDeNivelPase = async () => {
   if (!datos) return;
 
   const XP_POR_NIVEL = 1000; 
+  let nuevoNivel = datos.paseNivel || 1;
+  let nuevoXP = datos.paseXP || 0;
+  let subio = false;
+
+  while (nuevoXP >= XP_POR_NIVEL) {
+    nuevoNivel++;
+    nuevoXP -= XP_POR_NIVEL;
+    subio = true;
+  }
   
-  if (datos.paseXP >= XP_POR_NIVEL && datos.paseNivel < 50) {
+  if (subio) {
     const jugadorDocRef = doc(db, "jugadores", user.uid);
     await updateDoc(jugadorDocRef, {
-      paseNivel: increment(1),
-      paseXP: increment(-XP_POR_NIVEL)
+      paseNivel: nuevoNivel,
+      paseXP: nuevoXP
     });
   }
 };
@@ -283,13 +332,166 @@ export const comprarRecompensaPase = async (idRecompensa, costo, esPremium) => {
 
   if (!datos) return false;
 
+  // Validación de nivel seguro: Cada recompensa requiere 2 niveles
+  const match = idRecompensa.match(/^W(\d)_I(\d)$/);
+  if (match) {
+    const w = parseInt(match[1]);
+    const i = parseInt(match[2]);
+    const globalIndex = (w - 1) * 7 + (i - 1);
+    const lvlReq = (globalIndex + 1) * 2;
+    if ((datos.paseNivel || 1) < lvlReq) {
+      console.warn(`Intento de compra bloqueado: Nivel insuficiente para ${idRecompensa}. Nivel: ${datos.paseNivel}, Requerido: ${lvlReq}`);
+      return false;
+    }
+  }
+
   if (esPremium && !datos.pasePremium) return false;
   if ((datos.dinero || 0) < costo) return false;
   if ((datos.recompensasPase || []).includes(idRecompensa)) return false;
 
-  await updateDoc(jugadorDocRef, {
+  const updates = {
     dinero: increment(-costo),
     recompensasPase: arrayUnion(idRecompensa)
+  };
+
+  // VINCULACIÓN: Si es el item de Pase de Batalla vinculante, desbloquear la skin en Firestore
+  if (idRecompensa === 'W1_I4') {
+    updates.skinsDesbloqueadas = arrayUnion('pantalla_carga');
+  }
+
+  await updateDoc(jugadorDocRef, updates);
+  return true;
+};
+
+export const reiniciarPaseEnFirebase = async () => {
+  const user = auth.currentUser;
+  if (!user) return false;
+  const jugadorDocRef = doc(db, "jugadores", user.uid);
+  await updateDoc(jugadorDocRef, {
+    paseNivel: 1,
+    paseXP: 0,
+    recompensasPase: [],
+    pasePremium: false
   });
   return true;
+};
+
+// =====================================================================================
+// NUEVAS FUNCIONES DE AUTENTICACIÓN PERSONALIZADA (EMAIL, GOOGLE, FACEBOOK)
+// =====================================================================================
+
+export const comprobarYCrearUsuario = async (user) => {
+  try {
+    const jugadorDocRef = doc(db, "jugadores", user.uid);
+    const jugadorDoc = await getDoc(jugadorDocRef);
+    let esNuevo = false;
+    let datos = null;
+
+    if (!jugadorDoc.exists()) {
+      esNuevo = true;
+      datos = { 
+        ...INITIAL_PLAYER_DATA, 
+        uid: user.uid,
+        correo: user.email || "",
+        nombre: user.displayName || "",
+        nick: user.displayName ? user.displayName.split(" ")[0] : "Jugador",
+        avatarUrl: user.photoURL || "",
+        semanaActual: obtenerNumeroSemana() 
+      };
+      await setDoc(jugadorDocRef, datos);
+    } else {
+      datos = jugadorDoc.data();
+      // Si el usuario existe pero no tiene avatarUrl y el proveedor nos da uno, lo actualizamos
+      if (!datos.avatarUrl && user.photoURL) {
+        datos.avatarUrl = user.photoURL;
+        await updateDoc(jugadorDocRef, { avatarUrl: user.photoURL });
+      }
+      datos = await gestionarReinicioSemanal(user.uid, datos);
+    }
+    return { playerData: datos, esNuevo };
+  } catch (error) {
+    console.error("Error al comprobar/crear usuario en Firestore:", error);
+    throw error;
+  }
+};
+
+export const iniciarSesionConCorreo = async (correo, password) => {
+  try {
+    const credencial = await signInWithEmailAndPassword(auth, correo, password);
+    return await comprobarYCrearUsuario(credencial.user);
+  } catch (error) {
+    console.error("Error al iniciar sesión con correo:", error);
+    throw error;
+  }
+};
+
+export const registrarConCorreo = async (correo, password) => {
+  try {
+    const credencial = await createUserWithEmailAndPassword(auth, correo, password);
+    return await comprobarYCrearUsuario(credencial.user);
+  } catch (error) {
+    console.error("Error al registrar con correo:", error);
+    throw error;
+  }
+};
+
+export const iniciarSesionGoogle = async () => {
+  try {
+    const provider = new GoogleAuthProvider();
+    const credencial = await signInWithPopup(auth, provider);
+    return await comprobarYCrearUsuario(credencial.user);
+  } catch (error) {
+    console.error("Error al iniciar sesión con Google:", error);
+    throw error;
+  }
+};
+
+export const iniciarSesionFacebook = async () => {
+  try {
+    const provider = new FacebookAuthProvider();
+    const credencial = await signInWithPopup(auth, provider);
+    return await comprobarYCrearUsuario(credencial.user);
+  } catch (error) {
+    console.error("Error al iniciar sesión con Facebook:", error);
+    throw error;
+  }
+};
+
+export const esNicknameUnico = async (nickname) => {
+  try {
+    const q = query(collection(db, "jugadores"), where("nick", "==", nickname));
+    const querySnapshot = await getDocs(q);
+    return querySnapshot.empty;
+  } catch (error) {
+    console.error("Error al comprobar unicidad del nickname:", error);
+    return false;
+  }
+};
+
+export const guardarNicknameDeUsuario = async (uid, nickname) => {
+  try {
+    const jugadorDocRef = doc(db, "jugadores", uid);
+    await updateDoc(jugadorDocRef, { nick: nickname });
+    const snap = await getDoc(jugadorDocRef);
+    return snap.exists() ? snap.data() : null;
+  } catch (error) {
+    console.error("Error al guardar nickname:", error);
+    throw error;
+  }
+};
+
+export const comprarEncebollados = async (cantidad) => {
+  const user = auth.currentUser;
+  if (!user) throw new Error("Usuario no autenticado");
+  try {
+    const jugadorDocRef = doc(db, "jugadores", user.uid);
+    await updateDoc(jugadorDocRef, {
+      moneda: increment(cantidad)
+    });
+    const snap = await getDoc(jugadorDocRef);
+    return snap.exists() ? snap.data() : null;
+  } catch (error) {
+    console.error("Error al acreditar Encebollados:", error);
+    throw error;
+  }
 };

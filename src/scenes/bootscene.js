@@ -17,25 +17,14 @@ export default class BootScene extends Phaser.Scene {
 
     this.cameras.main.setBackgroundColor('#1a1a1a');
 
-    const loadingText = this.make.text({
-      x: width / 2,
-      y: height / 2 - 100,
-      text: 'Cargando el Ecuador...',
-      style: {
-        font: '48px sans-serif',
-        fill: '#ffffff'
-      }
-    }).setOrigin(0.5, 0.5);
+    // Cargar pantalla_carga primero para mostrarla lo antes posible
+    this.load.image('pantalla_carga', 'assets/ui/juguito_mora.png');
 
-    const percentText = this.make.text({
-      x: width / 2,
-      y: height / 2 + 50,
-      text: '0%',
-      style: {
-        font: '36px sans-serif',
-        fill: '#ffcc00'
-      }
-    }).setOrigin(0.5, 0.5);
+    this.load.once('filecomplete-image-pantalla_carga', (key, type, texture) => {
+      const bg = this.add.image(width / 2, height / 2, 'pantalla_carga');
+      bg.setDisplaySize(width, height);
+      bg.setDepth(-1); // Ubicar detrás de la barra de carga
+    });
 
     const progressBarContainer = this.add.graphics();
     progressBarContainer.lineStyle(6, 0xffffff, 0.2);
@@ -45,14 +34,9 @@ export default class BootScene extends Phaser.Scene {
 
     // --- 2. EVENTOS DE SEGUIMIENTO DE LA CARGA ---
     this.load.on('progress', (value) => {
-      percentText.setText(parseInt(value * 100) + '%');
       progressBar.clear();
       progressBar.fillStyle(0x0095ff, 1);
       progressBar.fillRect(width / 2 - 310, height / 2 - 15, 620 * value, 30);
-    });
-
-    this.load.on('fileprogress', (file) => {
-      loadingText.setText('Trayendo: ' + file.key);
     });
 
     // --- 3. CARGA DE RECURSOS MULTIMEDIA (ASSETS) ---
@@ -70,14 +54,17 @@ export default class BootScene extends Phaser.Scene {
     this.load.image('boton_precio', 'assets/ui/btn_precio.png');
     this.load.image('contenedor_ui', 'assets/ui/contenedor_ui.png');
     this.load.image('contenedor_skin', 'assets/ui/contenedor_skin.png');
+    this.load.image('contenedor_objetos', 'assets/ui/contenedor_objetos.png');
     this.load.image('boton_volver', 'assets/ui/btn_volver.png');
+    this.load.image('boton_pause', 'assets/ui/pause.png');
     this.load.image('encebollado', 'assets/ui/encebollado.png');
     this.load.image('deuda', 'assets/ui/deuda.png');
     this.load.image('dinero', 'assets/ui/dinero.png');
+    this.load.image('boton_signout', 'assets/ui/signout.png');
+    this.load.image('boton_pause', 'assets/ui/pause.png');
 
     this.load.image('interfaz_pase', 'assets/ui/interfaz_pase.png');
     this.load.image('juguito_mora', 'assets/ui/juguito_mora.png');
-
     // Mapas / Niveles
     this.load.image('fondo_nivel1', 'assets/ui/fondo_bahia.png');
     this.load.image('fondo_nivel2', 'assets/ui/fondo_centro.png');
@@ -96,8 +83,14 @@ export default class BootScene extends Phaser.Scene {
 
     // Audio
     this.load.audio('musica_ambiente', 'assets/audio/tecno_sanjuanito_8bit.mp3');
+    this.load.audio('musica_salsa', 'assets/audio/tecno_sanjuanito_8bit.mp3');
+    this.load.audio('musica_cumbia', 'assets/audio/tecno_sanjuanito_8bit.mp3');
     this.load.audio('sonido_venta', 'assets/audio/caja_registradora.mp3');
     this.load.audio('sonido_moto', 'assets/audio/moto_acelerando.mp3');
+
+    //  CARGA DE SPRITESHEETS SKIN BASE
+    this.load.atlas('vagabundo', 'assets/sprites/vagabundo.png', 'assets/spritesheets/vagabundo.json');
+
   }
 
   // --- 4. CARGA ASÍNCRONA DE DATOS (FIREBASE) ---
@@ -105,18 +98,19 @@ export default class BootScene extends Phaser.Scene {
     try {
       console.log("Conectando con Firebase...");
 
-      // Esperamos que ambas peticiones se completen antes de continuar
-      const [datosJugador, catalogo] = await Promise.all([
-        iniciarSesionJugador(),
-        obtenerCatalogoSkins()
-      ]);
+      // Cargar catálogo de skins primero
+      const catalogo = await obtenerCatalogoSkins();
 
-      // Guardamos la información permanentemente en el registro global de Phaser
-      this.registry.set('playerData', datosJugador);
+      // Guardamos la información en el registro global de Phaser
       this.registry.set('catalogoSkins', catalogo || []);
+      
+      // Inicializar idioma si no está establecido aún
+      if (!this.registry.get('language')) {
+        this.registry.set('language', 'es');
+      }
 
-      console.log("Datos cargados. Iniciando menú...");
-      this.scene.start('MenuScene');
+      console.log("Catálogo cargado. Iniciando HomeScene...");
+      this.scene.start('HomeScene');
 
     } catch (error) {
       console.error("Error crítico de red al conectar con Firebase:", error);

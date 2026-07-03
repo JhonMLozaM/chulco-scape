@@ -2,5 +2,10 @@
   "appId": "com.tudominio.chulcoescape",
   "appName": "Chulco Escape",
   "webDir": "www",
-  "bundledWebRuntime": false
+  "bundledWebRuntime": false,
+  "plugins": {
+    "Keyboard": {
+      "resizeOnFullScreen": false
+    }
+  }
 }

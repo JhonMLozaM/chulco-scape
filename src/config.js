@@ -1,4 +1,6 @@
 import Phaser from 'phaser';
+import { Keyboard } from '@capacitor/keyboard';
+import { Capacitor } from '@capacitor/core';
 
 export const config = {
   type: Phaser.AUTO,
@@ -15,7 +17,7 @@ export const config = {
     default: 'arcade', // Físicas ligeras ideales para el survival de oleadas
     arcade: {
       gravity: { y: 0 }, // Vista aérea (Top-Down): No necesitamos gravedad cayendo hacia abajo
-      debug: false // Cambiar a true durante el desarrollo para ver las cajas de colisión en verde
+      debug: true // Cambiar a true durante el desarrollo para ver las cajas de colisión
     }
   },
 
@@ -29,5 +31,30 @@ export const config = {
   // 🛠️ ADICIÓN 2: Habilitar Multitouch (Punteros activos)
   input: {
     activePointers: 3      // Permite hasta 3 dedos simultáneos. Clave para moverte con el joystick y disparar bolones al mismo tiempo
+  },
+
+  // 🛡️ SOLUCIÓN PARA EL TECLADO VIRTUAL: Congelar el redimensionamiento nativo
+  callbacks: {
+    postBoot: (game) => {
+      if (Capacitor.isNativePlatform()) {
+        
+        // 1. Cuando el teclado se empieza a mostrar
+        Keyboard.addListener('keyboardWillShow', () => {
+          // Desactiva temporalmente el reescalado automático de Phaser
+          game.scale.stopListeners();
+        });
+
+        // 2. Cuando el teclado se empieza a ocultar
+        Keyboard.addListener('keyboardWillHide', () => {
+          // Reactiva la escucha de cambios de pantalla (por si giran el dispositivo después)
+          game.scale.startListeners();
+          
+          // Forzamos un refresco rápido tras un breve delay para asegurar la posición final limpia
+          setTimeout(() => {
+            game.scale.refresh();
+          }, 150);
+        });
+      }
+    }
   }
 };

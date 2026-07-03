@@ -1,14 +1,20 @@
 {
   "name": "chulco-scape",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
+  "main": "electron.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:dev": "electron .",       "comment1": "← NUEVO: Para probar el juego en Linux YA mismo",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux", "comment2": "← NUEVO: Para compilar la versión final de Linux/Steam Deck"
   },
   "devDependencies": {
+    "electron": "^42.3.2",
+    "electron-builder": "^26.8.1",
     "vite": "^8.0.12"
   },
   "dependencies": {
@@ -17,7 +23,32 @@
     "@capacitor/cli": "^8.3.4",
     "@capacitor/core": "^8.3.4",
     "@capacitor/ios": "^8.3.4",
+    "@capacitor/keyboard": "^8.0.3",
     "firebase": "^12.13.0",
-    "phaser": "^4.1.0"
+    "phaser": "^4.1.0",
+    "steamworks.js": "^0.4.0"
+  },
+  "build": {
+    "appId": "com.tudominio.chulcoescape",
+    "productName": "Chulco Escape",
+    "files": [
+      "electron.cjs",
+      "package.json",
+      "www/**/*"
+    ],
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "dir" 
+      ],
+      "comment3": "← Al igual que en Windows, 'dir' genera una carpeta descomprimida perfecta para Steam Linux",
+      "icon": "assets/icon.png" 
+    },
+    "asar": true
   }
 }

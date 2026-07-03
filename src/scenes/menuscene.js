@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
-import { actualizarDeuda } from '../services/firebase.js';
+import { actualizarDeuda, auth } from '../services/firebase.js';
+import { getT } from '../i18n.js';
 
 export default class MenuScene extends Phaser.Scene {
   constructor() {
@@ -11,54 +12,131 @@ export default class MenuScene extends Phaser.Scene {
     const width = this.cameras.main.width;
     const height = this.cameras.main.height;
 
-    // Configuración de texto para botones e idiomas
+    const lang = this.registry.get('language') || 'es';
+    const T = getT(lang);
+
+    // Configuración de texto para botones usando traducciones globales
     const idioma = {
-      jugar: '¡JUGAR!',
-      pase: 'PASE DE\nBATALLA',
-      tienda: 'MEJORAR\nPERSONAJE',
-      skins: '🎭 SKINS\nPREMIUM',
-      config: '⚙️ AJUSTES',
-      scores: '🏆 TOP ALTOS\nPUNTAJES'
+      jugar: T.menuJugar,
+      pase: T.menuPase,
+      tienda: T.menuTienda,
+      skins: T.menuSkins,
+      config: T.menuConfig,
+      scores: T.menuScores
     };
 
     // 1. Fondo
     this.add.image(width / 2, height / 2, 'fondo_menu').setDisplaySize(width, height);
 
     // 2. Control Seguro de Música Ambiental
-    let musica = this.sound.get('musica_ambiente');
+    const keyMusica = playerData?.musicaEquipada || 'musica_ambiente';
+    
+    // Detener cualquier otra pista de música que no sea la equipada
+    this.sound.getAll().forEach(snd => {
+      if (snd.key && snd.key.startsWith('musica_') && snd.key !== keyMusica) {
+        snd.stop();
+      }
+    });
+
+    let musica = this.sound.get(keyMusica);
     if (!musica) {
-      musica = this.sound.add('musica_ambiente', { loop: true, volume: 0.5 });
+      musica = this.sound.add(keyMusica, { loop: true, volume: 0.5 });
+      musica.play();
+    } else if (!musica.isPlaying) {
       musica.play();
     }
 
     // ==========================================
-    // 3. HUD IZQUIERDO (Estadísticas optimizadas con imágenes)
+    // 3. TARJETA DE PERFIL (superior izquierda)
     // ==========================================
-    const hudX = 80;
-    const sfxSize = 40; // Tamaño en px para los iconos del HUD
+    const cardW = 260; // 30% más grande en width
+    const cardH = 135; // la mitad de height
+    const cardX = cardW / 2 + 50;
+    const cardY = cardH / 2 + 25 ;
 
-    // --- SECCIÓN: DINERO ACTUAL ---
-    this.add.text(hudX, 40, 'Dinero actual:', {
-      font: 'bold 20px Arial', fill: '#ffffff', stroke: '#000000', strokeThickness: 3
-    });
-    // Icono de la bolsa de dinero cargada desde BootScene como 'dinero'
-    this.add.image(hudX + 20, 85, 'dinero').setDisplaySize(sfxSize, sfxSize);
-    // Texto del valor
-    this.crearTextoHUD(hudX + 55, 70, `$${playerData ? playerData.dinero : 0}`, '#ffcc00');
+    // Fondo de la tarjeta usando contenedor_skin
+    this.add.image(cardX, cardY, 'contenedor_skin').setDisplaySize(cardW, cardH);
 
+    // Avatar del jugador (usa la skin equipada de fallback, o la foto real de Google/FB) - LADO IZQUIERDO
+    let accesorioKey = playerData?.accesorioEquipado || 'skin_default';
+    if (accesorioKey === 'skin_base' || !this.textures.exists(accesorioKey)) {
+      accesorioKey = 'skin_default';
+    }
+    const avatarImg = this.add.image(cardX - cardW / 2 + 75, cardY, accesorioKey).setDisplaySize(80, 80);
 
-    // --- SECCIÓN: DEUDA A PAGAR ---
-    this.add.text(hudX, 130, 'Deuda a pagar:', {
-      font: 'bold 20px Arial', fill: '#ffffff', stroke: '#000000', strokeThickness: 3
-    });
-    // Icono de la alarma roja cargada desde BootScene como 'deuda'
-    this.add.image(hudX + 20, 175, 'deuda').setDisplaySize(sfxSize, sfxSize);
-    // Texto del valor
-    this.crearTextoHUD(hudX + 55, 160, `$${playerData ? playerData.deudaActual : 0}`, '#ff3333');
+    // Carga de avatar dinámico con HTML Image (CORS & Phaser loader safe)
+    const avatarUrl = playerData?.avatarUrl;
+    if (avatarUrl && avatarUrl.trim() !== "") {
+      const textureKey = `avatar_${playerData.uid || 'guest'}`;
+      if (this.textures.exists(textureKey)) {
+        avatarImg.setTexture(textureKey);
+        avatarImg.setDisplaySize(80, 80);
+      } else {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          if (this.textures && this.textures.exists(textureKey)) {
+            this.textures.remove(textureKey);
+          }
+          if (this.textures && avatarImg && avatarImg.active) {
+            this.textures.addImage(textureKey, img);
+            avatarImg.setTexture(textureKey);
+            avatarImg.setDisplaySize(80, 80);
+          }
+        };
+        img.onerror = () => {
+          console.warn("Error al cargar avatar por URL. Usando fallback.");
+        };
+        img.src = avatarUrl;
+      }
+    }
+
+    // GRUPO DE 3 FILAS - LADO DERECHO
+    const infoX = cardX - cardW / 2 + 125;
+
+    // Fila 1: Nick del jugador
+    const nickTexto = playerData?.nick || 'Jugador';
+    this.add.text(infoX, cardY - 28, nickTexto, {
+      fontFamily: 'Arial', fontSize: '18px', fontStyle: 'bold',
+      fill: '#ffffff', stroke: '#000000', strokeThickness: 4,
+      align: 'left', wordWrap: { width: cardW - 130 }
+    }).setOrigin(0, 0.5);
+
+    // Fila 2: Nivel
+    const nivel = playerData?.paseNivel || 1;
+    this.add.text(infoX, cardY, `Lvl. ${nivel}`, {
+      fontFamily: 'Arial', fontSize: '22px', fontStyle: 'bold',
+      fill: '#d5c23b', stroke: '#000000', strokeThickness: 4
+    }).setOrigin(0, 0.5);
+
+    // Fila 3: XP acumulada
+    const xpActual = playerData?.paseXP || 0;
+    this.add.text(infoX, cardY + 28, `${xpActual} XP`, {
+      fontFamily: 'Arial', fontSize: '16px', fontStyle: 'bold',
+      fill: '#ffffff', stroke: '#000000', strokeThickness: 3
+    }).setOrigin(0, 0.5);
+
+    // Dinero y deuda: doble de tamaño de íconos (56x56) y textos más grandes (26px)
+    const iconX = cardX - 60;
+    const textX = cardX - 20;
+
+    const badgeY = cardY + cardH / 2 + 45;
+    this.add.image(iconX, badgeY, 'dinero').setDisplaySize(56, 56);
+    this.add.text(textX, badgeY, `$${playerData?.dinero ?? 0}`, {
+      fontFamily: 'Arial', fontSize: '26px', fontStyle: 'bold',
+      fill: '#ffcc00', stroke: '#000000', strokeThickness: 4
+    }).setOrigin(0, 0.5);
+
+    const deudaY = badgeY + 68;
+    this.add.image(iconX, deudaY, 'deuda').setDisplaySize(56, 56);
+    this.add.text(textX, deudaY, `$${playerData?.deudaActual ?? 0}`, {
+      fontFamily: 'Arial', fontSize: '26px', fontStyle: 'bold',
+      fill: '#ff4444', stroke: '#000000', strokeThickness: 4
+    }).setOrigin(0, 0.5);
 
 
     // Título Principal
-    this.add.text(width / 2, height * 0.15, '¡CHULKO-SKAPE!', {
+    this.add.text(width / 2, height * 0.15, T.menuTitulo, {
       font: 'bold 64px Arial', fill: '#ffffff', align: 'center', stroke: '#000000', strokeThickness: 8
     }).setOrigin(0.5);
 
@@ -106,7 +184,7 @@ export default class MenuScene extends Phaser.Scene {
     // --- Botón de Configuración ---
     this.crearBotonImagen(rightX, startY + (gap * 2) + 50, 'boton_config', '', sideBtnWidth, sideBtnHeight, 0)
       .on('pointerdown', () => {
-          console.log("Abriendo panel de configuración...");
+          this.scene.start('ConfigScene');
       });
 
 
@@ -133,6 +211,22 @@ export default class MenuScene extends Phaser.Scene {
         },
         loop: true
     });
+
+    // ==========================================
+    // 8. BOTÓN DE CERRAR SESIÓN (LADO INFERIOR IZQUIERDO)
+    // ==========================================
+    this.add.image(width / 13, height - 80, 'boton_signout')
+      .setDisplaySize(125, 125)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerdown', async () => {
+        try {
+          await auth.signOut();
+          this.registry.set('playerData', null);
+          this.scene.start('HomeScene');
+        } catch (error) {
+          console.error("Error al cerrar sesión:", error);
+        }
+      });
 
     this.cameras.main.fadeIn(500, 0, 0, 0);
   }

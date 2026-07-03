@@ -26,6 +26,9 @@ export default class Chulquero extends Phaser.Physics.Arcade.Sprite {
     // evitando colisiones fantasma en las ruedas o los bordes traseros del sprite.
     this.body.setSize(this.width * 0.8, this.height * 0.7);
     this.body.setOffset(this.width * 0.1, this.height * 0.15);
+    
+    // Color de depuración de la colisión en amarillo
+    this.body.debugBodyColor = 0xffff00;
 
     // --- DIFICULTAD ESCALABLE (Mecánica Progresiva) ---
     // Calculamos cuánto tiempo ha transcurrido en la ronda (la ronda dura 180 segundos)

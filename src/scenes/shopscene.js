@@ -1,44 +1,39 @@
 import Phaser from 'phaser';
 import { comprarMejoraEnTienda, obtenerDatosJugador } from '../services/firebase.js';
-
-const TEXTOS = {
-  es: {
-    tienda: '🏪 TIENDA MEJORAS',
-    dinero: 'Dinero: $',
-    abonarDeuda: '💸 Abonar Deuda',
-    deudaActual: 'Deuda actual: $',
-    velocidad: '🏃 Velocidad (Nvl ',
-    descVelocidad: 'Camina más rápido',
-    danio: '🔥 Daño Bolón (Nvl ',
-    descDanio: 'Derriba motos',
-    irSkins: '🎭 TIENDA SKINS (PREMIUM)',
-    errorDinero: '¡No tienes dinero suficiente\nGil y Chiro!',
-    exitoMejora: '✅ Mejora adquirida',
-    exitoDeuda: '📉 Deuda reducida'
-  }
-};
+import { getT } from '../i18n.js';
 
 export default class ShopScene extends Phaser.Scene {
   constructor() {
     super('ShopScene');
-    this.lang = 'es';
   }
 
-  // Convertimos a asíncrono para poder pedir datos a Firebase
   async create() {
     const width = this.cameras.main.width;
     const height = this.cameras.main.height;
     this.cameras.main.setBackgroundColor('#252525');
 
-    // Mostramos un texto temporal de carga mientras llega la información
-    const loadingText = this.add.text(width / 2, height / 2, "Cargando billetera...", { font: 'bold 24px Arial', fill: '#ffffff' }).setOrigin(0.5);
+    const cachedPlayer = this.registry.get('playerData');
+    const equippedPantalla = cachedPlayer?.pantallaCargaEquipada || 'pantalla_default';
+    const catalogoSkins = this.registry.get('catalogoSkins') || [];
+    const itemPantalla = catalogoSkins.find(item => item.id === equippedPantalla);
+    const textureKey = itemPantalla ? (itemPantalla.imagen || itemPantalla.id) : 'fondo_nivel1';
+
+    this.lang = this.registry.get('language') || 'es';
+    const T = getT(this.lang);
+
+    const loadingBg = this.add.image(width / 2, height / 2, textureKey)
+        .setDisplaySize(width, height)
+        .setDepth(999);
+    const loadingOverlay = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.4)
+        .setDepth(999);
+    const loadingText = this.add.text(width / 2, height / 2, T.shopCargando, { 
+        font: 'bold 44px Arial', fill: '#ffffff', stroke: '#000000', strokeThickness: 6
+    }).setOrigin(0.5).setDepth(1000);
 
     try {
-        // LECTURA EN TIEMPO REAL: Traemos los datos frescos de la base de datos
         const datosNube = await obtenerDatosJugador();
         if (datosNube) {
             this.playerData = datosNube;
-            // Actualizamos la memoria global de Phaser con la data correcta
             this.registry.set('playerData', this.playerData);
         } else {
             this.playerData = this.registry.get('playerData') || {};
@@ -48,12 +43,10 @@ export default class ShopScene extends Phaser.Scene {
         this.playerData = this.registry.get('playerData') || {};
     }
 
-    // Destruimos el texto de carga para mostrar la tienda
+    loadingBg.destroy();
+    loadingOverlay.destroy();
     loadingText.destroy();
 
-    const T = TEXTOS[this.lang];
-    
-    // CORRECCIÓN: Usar 'dinero' en lugar de 'monedas'
     if (this.playerData.dinero === undefined || this.playerData.dinero === null) this.playerData.dinero = 0;
     
     if (!this.playerData.mejoras) this.playerData.mejoras = {};
@@ -64,32 +57,39 @@ export default class ShopScene extends Phaser.Scene {
     // UI Superior Estática
     const uiLayer = this.add.container(0, 0).setScrollFactor(0).setDepth(10);
     uiLayer.add(this.add.rectangle(width / 2, 80, width, 160, 0x252525));
-    uiLayer.add(this.add.text(width / 2, 60, T.tienda, { font: 'bold 50px Arial', fill: '#ffffff' }).setOrigin(0.5));
     
-    // CORRECCIÓN: Mostrar 'dinero' con el dato recién traído
-    uiLayer.add(this.add.text(50, 100, `${T.dinero}${this.playerData.dinero}`, { font: 'bold 36px Arial', fill: '#ffcc00' }));
+    // Título estilizado
+    uiLayer.add(this.add.text(width / 2, 50, T.shopTitulo, { 
+      fontFamily: 'Arial', fontSize: '44px', fontStyle: 'bold', fill: '#ffffff', stroke: '#000000', strokeThickness: 5 
+    }).setOrigin(0.5));
+    
+    // Icono de Dinero + Valor
+    const iconDinero = this.add.image(70, 115, 'dinero').setDisplaySize(40, 40);
+    const txtDinero = this.add.text(105, 95, `${this.playerData.dinero}`, {
+      fontFamily: 'Arial', fontSize: '36px', fontStyle: 'bold', fill: '#ffffff', stroke: '#000000', strokeThickness: 4
+    });
+    uiLayer.add([iconDinero, txtDinero]);
 
     // Contenedor con Scroll para las Mejoras
     this.container = this.add.container(0, this.registry.get('scrollPos') || 0).setDepth(5);
     let yPos = 250;
 
     // Fila: Abonar Deuda
-    this.crearFila(yPos, T.abonarDeuda, `${T.deudaActual}${Math.max(0, this.playerData.deudaActual)}`, this.playerData.deudaActual > 0 ? 100 : 0, () => {
+    this.crearFila(yPos, T.shopAbonarDeuda, `${T.shopDeudaActual}${Math.max(0, this.playerData.deudaActual)}`, this.playerData.deudaActual > 0 ? 100 : 0, () => {
       if (this.playerData.deudaActual <= 0) return;
-      this.procesarTransaccion('deuda', 100);
+      this.procesarTransaccion('deuda', 100, T);
     });
     yPos += 180;
 
     // Fila: Velocidad
     const nvVel = this.playerData.mejoras.velocidad;
-    this.crearFila(yPos, `${T.velocidad}${nvVel})`, T.descVelocidad, nvVel * 200, () => this.procesarTransaccion('velocidad', nvVel * 200));
+    this.crearFila(yPos, `${T.shopVelocidad}${nvVel})`, T.shopDescVelocidad, nvVel * 200, () => this.procesarTransaccion('velocidad', nvVel * 200, T));
     yPos += 180;
 
     // Fila: Daño Bolón
     const nvDmg = this.playerData.mejoras.danioBolon;
-    this.crearFila(yPos, `${T.danio}${nvDmg})`, T.descDanio, nvDmg * 250, () => this.procesarTransaccion('danioBolon', nvDmg * 250));
+    this.crearFila(yPos, `${T.shopDanio}${nvDmg})`, T.shopDescDanio, nvDmg * 250, () => this.procesarTransaccion('danioBolon', nvDmg * 250, T));
     yPos += 180;
-
 
     // Sistema de Scroll mediante rueda del mouse
     this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
@@ -118,15 +118,27 @@ export default class ShopScene extends Phaser.Scene {
     fondoImg.setDisplaySize(anchoDeseado, altoDeseado);
     group.add(fondoImg);
 
-    group.add(this.add.text(100, y - 40, titulo, { font: 'bold 32px Arial', fill: '#ffffff' }));
-    group.add(this.add.text(100, y + 10, desc, { font: '24px Arial', fill: '#aaa' }));
+    // Titulo estilizado con bordes
+    const txtTitulo = this.add.text(200, y - 35, titulo, { 
+      fontFamily: 'Arial', fontSize: '28px', fontStyle: 'bold', fill: '#ffffff', stroke: '#000000', strokeThickness: 4 
+    });
+    group.add(txtTitulo);
 
-    const btnImg = this.add.image(this.cameras.main.width - 200, y, 'boton_precio');
+    // Descripción estilizada con bordes
+    const txtDesc = this.add.text(200, y + 15, desc, { 
+      fontFamily: 'Arial', fontSize: '20px', fill: '#ffcc00', stroke: '#000000', strokeThickness: 3 
+    });
+    group.add(txtDesc);
+
+    const btnImg = this.add.image(this.cameras.main.width - 250, y, 'boton_precio');
     btnImg.setDisplaySize(220, 75);
     btnImg.setTint(costo > 0 ? 0xffcc00 : 0x88ff88); 
     btnImg.setInteractive({ useHandCursor: true });
 
-    const txtCosto = this.add.text(this.cameras.main.width - 200, y, costo > 0 ? `$${costo}` : 'MAX', { font: 'bold 26px Arial', fill: '#ffffff' }).setOrigin(0.5);
+    // Texto de costo estilizado con color oscuro legible sobre botón
+    const txtCosto = this.add.text(this.cameras.main.width - 250, y, costo > 0 ? `$${costo}` : 'MAX', { 
+      fontFamily: 'Arial', fontSize: '24px', fontStyle: 'bold', fill: '#ffffff' 
+    }).setOrigin(0.5);
 
     const btnBaseScaleX = btnImg.scaleX;
     const btnBaseScaleY = btnImg.scaleY;
@@ -159,29 +171,71 @@ export default class ShopScene extends Phaser.Scene {
     this.container.add(group);
   }
 
-  async procesarTransaccion(tipo, costo) {
-    const T = TEXTOS[this.lang];
-    // CORRECCIÓN: Validar contra 'dinero'
-    if (this.playerData.dinero < costo) { this.mostrarNotificacion(T.errorDinero, '#f00'); return; }
+  async procesarTransaccion(tipo, costo, T) {
+    if (!T) T = getT(this.lang || 'es');
+    if (this.playerData.dinero < costo) { this.mostrarNotificacion(T.shopErrorDinero, '#f00'); return; }
     
     try {
         const exito = await comprarMejoraEnTienda(tipo, costo);
         if (exito) {
-            // CORRECCIÓN: Restar de 'dinero'
             this.playerData.dinero -= costo;
             
             if (tipo === 'deuda') this.playerData.deudaActual = Math.max(0, (this.playerData.deudaActual || 0) - 100);
             else this.playerData.mejoras[tipo] = (this.playerData.mejoras[tipo] || 1) + 1;
             
             this.registry.set('playerData', this.playerData);
-            this.mostrarNotificacion(tipo === 'deuda' ? T.exitoDeuda : T.exitoMejora, '#0f0');
+            this.mostrarNotificacion(tipo === 'deuda' ? T.shopExitoDeuda : T.shopExitoMejora, '#0f0');
             this.time.delayedCall(1000, () => this.scene.restart());
         }
     } catch (e) { console.error(e); }
   }
 
   mostrarNotificacion(mensaje, colorFondo) {
-    const txt = this.add.text(this.cameras.main.width / 2, 200, mensaje, { font: 'bold 30px Arial', fill: '#fff', backgroundColor: colorFondo, padding: {x:20, y:10}, align: 'center' }).setOrigin(0.5).setScrollFactor(0).setDepth(20);
-    this.time.delayedCall(2000, () => txt.destroy());
+    const width = this.cameras.main.width;
+    const height = this.cameras.main.height;
+
+    const container = this.add.container(width / 2, height / 2).setScrollFactor(0).setDepth(100);
+
+    // Modal background image
+    const panel = this.add.image(0, 0, 'contenedor_objetos')
+      .setDisplaySize(480, 240);
+    container.add(panel);
+
+    // Text with the form's font style
+    const txt = this.add.text(0, 0, mensaje, { 
+      fontFamily: 'Arial', 
+      fontSize: '28px', 
+      fontStyle: 'bold', 
+      fill: '#ffffff', 
+      align: 'center', 
+      stroke: '#000000', 
+      strokeThickness: 5,
+      wordWrap: { width: 420 }
+    }).setOrigin(0.5);
+    container.add(txt);
+
+    // Animation entry
+    container.setScale(0);
+    this.tweens.add({
+      targets: container,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 250,
+      ease: 'Back.easeOut'
+    });
+
+    // Automatically destroy after 2 seconds with exit animation
+    this.time.delayedCall(2200, () => {
+      if (this.sys.isActive()) {
+        this.tweens.add({
+          targets: container,
+          scaleX: 0,
+          scaleY: 0,
+          duration: 200,
+          ease: 'Back.easeIn',
+          onComplete: () => container.destroy()
+        });
+      }
+    });
   }
 }
